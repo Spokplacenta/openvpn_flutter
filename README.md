@@ -137,7 +137,7 @@ void connect() {
 established in some cases and will siliently report "disconnected" when trying to connect. Most likely it's related to some symbols stripping by
 Google Play.
 ```
-gradle.properties > android.bundle.enableUncompressedNativeLibs=false
+//gradle.properties > android.bundle.enableUncompressedNativeLibs=false
 AndroidManifest > android:extractNativeLibs="true" in application tag
 ```
 
