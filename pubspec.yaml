@@ -9,7 +9,11 @@ environment:
 
 dependencies:
   flutter:
-    sdk: flutter 
+    sdk: flutter
+  http: ^1.1.0
+  path_provider: ^2.1.1
+  crypto: ^3.0.3
+  path: ^1.8.3 
 
 dev_dependencies:
   flutter_lints: ^3.0.1
@@ -24,3 +28,5 @@ flutter:
         pluginClass: OpenVPNFlutterPlugin
       ios:
         pluginClass: OpenVPNFlutterPlugin
+      windows:
+        pluginClass: OpenvpnFlutterPlugin

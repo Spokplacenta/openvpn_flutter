@@ -4,6 +4,7 @@ import 'dart:io';
 import 'dart:math';
 import 'package:flutter/services.dart';
 import 'model/vpn_status.dart';
+import 'windows_binary_manager.dart';
 
 ///Stages of vpn connections
 enum VPNStage {
@@ -98,14 +99,36 @@ class OpenVPN {
               localizedDescription != null,
           "These values are required for ios.");
     }
+    
+    // For Windows, ensure the binary is available
+    String? binaryPath;
+    if (Platform.isWindows) {
+      try {
+        binaryPath = await WindowsBinaryManager.ensureBinary();
+      } catch (e) {
+        throw Exception(
+            "Failed to ensure OpenVPN binary is available: $e. "
+            "Please check your internet connection and try again.");
+      }
+    }
+    
     onVpnStatusChanged?.call(VpnStatus.empty());
     initialized = true;
     _initializeListener();
-    return _channelControl.invokeMethod("initialize", {
+    
+    // Prepare arguments for initialize
+    final Map<String, dynamic> args = {
       "groupIdentifier": groupIdentifier,
       "providerBundleIdentifier": providerBundleIdentifier,
       "localizedDescription": localizedDescription,
-    }).then((value) {
+    };
+    
+    // For Windows, add the binary path
+    if (Platform.isWindows && binaryPath != null) {
+      args["binaryPath"] = binaryPath;
+    }
+    
+    return _channelControl.invokeMethod("initialize", args).then((value) {
       Future.wait([
         status().then((value) => lastStatus?.call(value)),
         stage().then((value) {
@@ -212,6 +235,37 @@ class OpenVPN {
               packetsIn: byteIn,
               packetsOut: byteOut,
             );
+          } else if (Platform.isWindows) {
+            // Windows format: JSON similar to Android
+            var data = jsonDecode(value);
+            var connectedOn =
+                data["connected_on"] != null && data["connected_on"] != "null"
+                    ? DateTime.tryParse(data["connected_on"].toString())
+                    : null;
+            connectedOn ??= _tempDateTime ?? DateTime.now();
+            
+            String byteIn =
+                data["byte_in"] != null ? data["byte_in"].toString() : "0";
+            String byteOut =
+                data["byte_out"] != null ? data["byte_out"].toString() : "0";
+            String packetsIn =
+                data["packets_in"] != null ? data["packets_in"].toString() : "0";
+            String packetsOut =
+                data["packets_out"] != null ? data["packets_out"].toString() : "0";
+            
+            if (byteIn.trim().isEmpty) byteIn = "0";
+            if (byteOut.trim().isEmpty) byteOut = "0";
+            if (packetsIn.trim().isEmpty) packetsIn = "0";
+            if (packetsOut.trim().isEmpty) packetsOut = "0";
+            
+            return VpnStatus(
+              connectedOn: connectedOn,
+              duration: _duration(DateTime.now().difference(connectedOn).abs()),
+              byteIn: byteIn,
+              byteOut: byteOut,
+              packetsIn: packetsIn,
+              packetsOut: packetsOut,
+            );
           } else {
             throw Exception("Openvpn not supported on this platform");
           }
@@ -289,7 +343,7 @@ class OpenVPN {
         _lastStage = vpnStage;
       }
       if (vpnStage != VPNStage.disconnected) {
-        if (Platform.isAndroid) {
+        if (Platform.isAndroid || Platform.isWindows) {
           _createTimer();
         } else if (Platform.isIOS && vpnStage == VPNStage.connected) {
           _createTimer();
