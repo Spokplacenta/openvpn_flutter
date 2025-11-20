@@ -324,9 +324,7 @@ class WindowsBinaryManager {
       }
 
       // If not found, search recursively
-      if (foundPath == null) {
-        foundPath = await _findBinaryRecursive(extractDir, binaryName);
-      }
+      foundPath ??= await _findBinaryRecursive(extractDir, binaryName);
 
       return foundPath;
     } catch (e) {
