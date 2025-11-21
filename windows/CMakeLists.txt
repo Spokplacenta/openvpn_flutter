@@ -1,20 +1,37 @@
-# Configuration CMake pour le plugin Windows OpenVPN Flutter
+# CMake configuration for Windows OpenVPN Flutter plugin
 
 cmake_minimum_required(VERSION 3.14)
 project(openvpn_flutter_windows)
 
-# Configuration Flutter
-set(FLUTTER_MANAGED_DIR "${CMAKE_CURRENT_SOURCE_DIR}/flutter/ephemeral")
-include("${FLUTTER_MANAGED_DIR}/generated_plugin_registrant.cmake")
+# Flutter configuration
+# FLUTTER_MANAGED_DIR should be defined by the main project
+# If not, we try to find it from the main project
+if(NOT DEFINED FLUTTER_MANAGED_DIR)
+    # Search from the main project directory
+    # The plugin is in .plugin_symlinks/openvpn_flutter/windows
+    # We go up to the ephemeral directory of the main project
+    # Path: .../ephemeral/.plugin_symlinks/openvpn_flutter/windows
+    get_filename_component(PLUGIN_DIR "${CMAKE_CURRENT_SOURCE_DIR}" DIRECTORY)
+    # PLUGIN_DIR = .../openvpn_flutter
+    get_filename_component(SYMLINKS_DIR "${PLUGIN_DIR}" DIRECTORY)
+    # SYMLINKS_DIR = .../.plugin_symlinks
+    get_filename_component(EPHEMERAL_DIR "${SYMLINKS_DIR}" DIRECTORY)
+    # EPHEMERAL_DIR = .../ephemeral
+    # FLUTTER_MANAGED_DIR should be .../ephemeral/flutter/ephemeral
+    set(FLUTTER_MANAGED_DIR "${EPHEMERAL_DIR}/flutter/ephemeral")
+endif()
 
-# Configuration Rust
+# Note: generated_plugin_registrant.cmake is included by the main CMakeLists.txt
+# of the Flutter project, not by the plugin. We don't need to include it here.
+
+# Rust configuration
 set(RUST_DIR "${CMAKE_CURRENT_SOURCE_DIR}/rust")
 set(RUST_TARGET "x86_64-pc-windows-msvc")
 set(RUST_TARGET_DIR "${RUST_DIR}/target")
 set(RUST_LIB_NAME "openvpn_flutter_rust")
-option(OPENVPN_FLUTTER_USE_PREBUILT_RUST "Utiliser les artefacts Rust précompilés si disponibles" ON)
+option(OPENVPN_FLUTTER_USE_PREBUILT_RUST "Use prebuilt Rust artifacts if available" ON)
 
-# Déterminer le mode (debug/release)
+# Determine build mode (debug/release)
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     set(RUST_BUILD_TYPE "debug")
     set(CARGO_PROFILE_ARG "")
@@ -40,12 +57,12 @@ if(OPENVPN_FLUTTER_USE_PREBUILT_RUST AND EXISTS ${RUST_PREBUILT_DLL} AND EXISTS 
     set(RUST_IMPORT_LIB_PATH "${RUST_PREBUILT_IMPORT_LIB}")
 else()
     if(OPENVPN_FLUTTER_USE_PREBUILT_RUST)
-        message(WARNING "Artefacts Rust précompilés introuvables (${RUST_PREBUILT_DLL}). Compilation locale via cargo.")
+        message(WARNING "Prebuilt Rust artifacts not found (${RUST_PREBUILT_DLL}). Building locally via cargo.")
     endif()
 endif()
 
 if(NOT USE_PREBUILT_RUST)
-    # Compiler la bibliothèque Rust
+    # Build the Rust library
     add_custom_command(
         OUTPUT ${RUST_DLL_PATH}
         BYPRODUCTS ${RUST_IMPORT_LIB_PATH}
@@ -54,31 +71,31 @@ if(NOT USE_PREBUILT_RUST)
         COMMENT "Building Rust library (${RUST_BUILD_TYPE})"
     )
 
-    # Créer une cible pour la bibliothèque Rust
+    # Create a target for the Rust library
     add_custom_target(rust_lib DEPENDS ${RUST_DLL_PATH})
 else()
     add_custom_target(rust_lib)
 endif()
 
-# Sources C++
+# C++ sources
 add_library(${PROJECT_NAME} SHARED
     "openvpn_flutter_plugin.cpp"
     "openvpn_flutter_plugin.h"
 )
 
-# Inclure les répertoires
+# Include directories
 target_include_directories(${PROJECT_NAME} PRIVATE "${FLUTTER_MANAGED_DIR}")
 
-# Lier avec Flutter
+# Link with Flutter
 target_link_libraries(${PROJECT_NAME} PRIVATE flutter flutter_wrapper_plugin)
 
-# Lier avec la bibliothèque Rust
+# Link with Rust library
 target_link_libraries(${PROJECT_NAME} PRIVATE "${RUST_IMPORT_LIB_PATH}")
 
-# Dépendance sur la compilation Rust
+# Dependency on Rust compilation
 add_dependencies(${PROJECT_NAME} rust_lib)
 
-# Copier la DLL Rust vers le répertoire de sortie
+# Copy Rust DLL to output directory
 add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
     "${RUST_DLL_PATH}"
