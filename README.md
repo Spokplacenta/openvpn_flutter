@@ -95,6 +95,13 @@ Open `VPNExtension > PacketTunnelProvider.swift` and copy-paste the script from 
 
 You must use iOS devices instead of the simulator to connect.
 
+## Windows Setup
+
+- La partie native Windows est composée d’un plugin Flutter (C++) et d’une bibliothèque Rust (`openvpn_flutter_rust.dll`).  
+- Depuis cette version, la DLL est distribuée précompilée (`windows/rust/prebuilt`) : un `flutter build windows` standard n’a plus besoin de Rust/rustup.
+- CMake détecte automatiquement les binaires précompilés. Pour forcer une recompilation (développement / debug), passe `-DOPENVPN_FLUTTER_USE_PREBUILT_RUST=OFF` lors de la génération CMake.
+- Pour régénérer les artefacts, exécute `cargo build --target x86_64-pc-windows-msvc --release` depuis `windows/rust`, puis copie les fichiers `.dll`/`.lib` vers `windows/rust/prebuilt/x86_64-pc-windows-msvc/release/`. La structure détaillée est documentée dans `windows/rust/prebuilt/README.md`.
+
 ## Recipe
 
 ### Initialize

@@ -9,28 +9,56 @@ include("${FLUTTER_MANAGED_DIR}/generated_plugin_registrant.cmake")
 
 # Configuration Rust
 set(RUST_DIR "${CMAKE_CURRENT_SOURCE_DIR}/rust")
+set(RUST_TARGET "x86_64-pc-windows-msvc")
 set(RUST_TARGET_DIR "${RUST_DIR}/target")
 set(RUST_LIB_NAME "openvpn_flutter_rust")
+option(OPENVPN_FLUTTER_USE_PREBUILT_RUST "Utiliser les artefacts Rust précompilés si disponibles" ON)
 
 # Déterminer le mode (debug/release)
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     set(RUST_BUILD_TYPE "debug")
-    set(RUST_LIB_PATH "${RUST_TARGET_DIR}/debug/${RUST_LIB_NAME}.dll")
+    set(CARGO_PROFILE_ARG "")
 else()
     set(RUST_BUILD_TYPE "release")
-    set(RUST_LIB_PATH "${RUST_TARGET_DIR}/release/${RUST_LIB_NAME}.dll")
+    set(CARGO_PROFILE_ARG "--release")
 endif()
 
-# Compiler la bibliothèque Rust
-add_custom_command(
-    OUTPUT ${RUST_LIB_PATH}
-    COMMAND cargo build --manifest-path "${RUST_DIR}/Cargo.toml" --target x86_64-pc-windows-msvc
-    WORKING_DIRECTORY ${RUST_DIR}
-    COMMENT "Building Rust library"
-)
+set(RUST_BUILD_OUTPUT_DIR "${RUST_TARGET_DIR}/${RUST_TARGET}/${RUST_BUILD_TYPE}")
+set(RUST_DLL_NAME "${RUST_LIB_NAME}.dll")
+set(RUST_IMPORT_LIB_NAME "${RUST_LIB_NAME}.lib")
+set(RUST_DLL_PATH "${RUST_BUILD_OUTPUT_DIR}/${RUST_DLL_NAME}")
+set(RUST_IMPORT_LIB_PATH "${RUST_BUILD_OUTPUT_DIR}/${RUST_IMPORT_LIB_NAME}")
 
-# Créer une cible pour la bibliothèque Rust
-add_custom_target(rust_lib DEPENDS ${RUST_LIB_PATH})
+set(RUST_PREBUILT_DIR "${RUST_DIR}/prebuilt/${RUST_TARGET}/${RUST_BUILD_TYPE}")
+set(RUST_PREBUILT_DLL "${RUST_PREBUILT_DIR}/${RUST_DLL_NAME}")
+set(RUST_PREBUILT_IMPORT_LIB "${RUST_PREBUILT_DIR}/${RUST_IMPORT_LIB_NAME}")
+
+set(USE_PREBUILT_RUST FALSE)
+if(OPENVPN_FLUTTER_USE_PREBUILT_RUST AND EXISTS ${RUST_PREBUILT_DLL} AND EXISTS ${RUST_PREBUILT_IMPORT_LIB})
+    set(USE_PREBUILT_RUST TRUE)
+    set(RUST_DLL_PATH "${RUST_PREBUILT_DLL}")
+    set(RUST_IMPORT_LIB_PATH "${RUST_PREBUILT_IMPORT_LIB}")
+else()
+    if(OPENVPN_FLUTTER_USE_PREBUILT_RUST)
+        message(WARNING "Artefacts Rust précompilés introuvables (${RUST_PREBUILT_DLL}). Compilation locale via cargo.")
+    endif()
+endif()
+
+if(NOT USE_PREBUILT_RUST)
+    # Compiler la bibliothèque Rust
+    add_custom_command(
+        OUTPUT ${RUST_DLL_PATH}
+        BYPRODUCTS ${RUST_IMPORT_LIB_PATH}
+        COMMAND cargo build --manifest-path "${RUST_DIR}/Cargo.toml" --target ${RUST_TARGET} ${CARGO_PROFILE_ARG}
+        WORKING_DIRECTORY ${RUST_DIR}
+        COMMENT "Building Rust library (${RUST_BUILD_TYPE})"
+    )
+
+    # Créer une cible pour la bibliothèque Rust
+    add_custom_target(rust_lib DEPENDS ${RUST_DLL_PATH})
+else()
+    add_custom_target(rust_lib)
+endif()
 
 # Sources C++
 add_library(${PROJECT_NAME} SHARED
@@ -39,16 +67,13 @@ add_library(${PROJECT_NAME} SHARED
 )
 
 # Inclure les répertoires
-target_include_directories(${PROJECT_NAME} PRIVATE
-    "${FLUTTER_MANAGED_DIR}"
-    "${RUST_TARGET_DIR}/x86_64-pc-windows-msvc/${RUST_BUILD_TYPE}"
-)
+target_include_directories(${PROJECT_NAME} PRIVATE "${FLUTTER_MANAGED_DIR}")
 
 # Lier avec Flutter
 target_link_libraries(${PROJECT_NAME} PRIVATE flutter flutter_wrapper_plugin)
 
 # Lier avec la bibliothèque Rust
-target_link_libraries(${PROJECT_NAME} PRIVATE "${RUST_LIB_PATH}")
+target_link_libraries(${PROJECT_NAME} PRIVATE "${RUST_IMPORT_LIB_PATH}")
 
 # Dépendance sur la compilation Rust
 add_dependencies(${PROJECT_NAME} rust_lib)
@@ -56,7 +81,7 @@ add_dependencies(${PROJECT_NAME} rust_lib)
 # Copier la DLL Rust vers le répertoire de sortie
 add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
-    "${RUST_LIB_PATH}"
+    "${RUST_DLL_PATH}"
     "$<TARGET_FILE_DIR:${PROJECT_NAME}>"
 )
 
