@@ -101,6 +101,6 @@ add_dependencies(${PLUGIN_TARGET_NAME} rust_lib)
 add_custom_command(TARGET ${PLUGIN_TARGET_NAME} POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
     "${RUST_DLL_PATH}"
-    "$<TARGET_FILE_DIR:${PROJECT_NAME}>"
+    "$<TARGET_FILE_DIR:${PLUGIN_TARGET_NAME}>"
 )
 
