@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
-use tokio::process::{Child, Command as TokioCommand};
+use tokio::process::{Child as TokioChild, Command as TokioCommand};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use crate::error::OpenVpnError;
 
@@ -20,7 +20,7 @@ pub struct VpnStats {
 /// Main OpenVPN manager
 pub struct OpenVpnManager {
     binary_path: PathBuf,
-    process: Arc<Mutex<Option<tokio::process::Child>>>,
+    process: Arc<Mutex<Option<TokioChild>>>,
     current_stage: Arc<Mutex<String>>,
     config_file: Arc<Mutex<Option<PathBuf>>>,  // Keep config file during execution
     auth_file: Arc<Mutex<Option<PathBuf>>>,   // Keep auth file during execution
@@ -57,7 +57,7 @@ impl OpenVpnManager {
     ) -> Result<(), OpenVpnError> {
         // Check that no process is already running
         {
-            let mut process = self.process.lock().unwrap();
+            let process = self.process.lock().unwrap();
             if process.is_some() {
                 return Err(OpenVpnError::ConnectionFailed(
                     "A connection is already in progress".to_string()
