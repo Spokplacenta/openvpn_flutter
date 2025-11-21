@@ -78,25 +78,27 @@ else()
 endif()
 
 # C++ sources
-add_library(${PROJECT_NAME} SHARED
+# Use a consistent target name that Flutter expects
+set(PLUGIN_TARGET_NAME "openvpn_flutter_plugin")
+add_library(${PLUGIN_TARGET_NAME} SHARED
     "openvpn_flutter_plugin.cpp"
     "openvpn_flutter_plugin.h"
 )
 
 # Include directories
-target_include_directories(${PROJECT_NAME} PRIVATE "${FLUTTER_MANAGED_DIR}")
+target_include_directories(${PLUGIN_TARGET_NAME} PRIVATE "${FLUTTER_MANAGED_DIR}")
 
 # Link with Flutter
-target_link_libraries(${PROJECT_NAME} PRIVATE flutter flutter_wrapper_plugin)
+target_link_libraries(${PLUGIN_TARGET_NAME} PRIVATE flutter flutter_wrapper_plugin)
 
 # Link with Rust library
-target_link_libraries(${PROJECT_NAME} PRIVATE "${RUST_IMPORT_LIB_PATH}")
+target_link_libraries(${PLUGIN_TARGET_NAME} PRIVATE "${RUST_IMPORT_LIB_PATH}")
 
 # Dependency on Rust compilation
-add_dependencies(${PROJECT_NAME} rust_lib)
+add_dependencies(${PLUGIN_TARGET_NAME} rust_lib)
 
 # Copy Rust DLL to output directory
-add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+add_custom_command(TARGET ${PLUGIN_TARGET_NAME} POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
     "${RUST_DLL_PATH}"
     "$<TARGET_FILE_DIR:${PROJECT_NAME}>"
