@@ -50,6 +50,9 @@ if(OPENVPN_FLUTTER_USE_PREBUILT_RUST)
     # Convert to absolute path for more reliable checking
     get_filename_component(RUST_PREBUILT_DLL_ABS "${RUST_PREBUILT_DLL}" ABSOLUTE)
     get_filename_component(RUST_PREBUILT_IMPORT_LIB_ABS "${RUST_PREBUILT_IMPORT_LIB}" ABSOLUTE)
+    # Debug: show what we're looking for
+    message(STATUS "Checking for prebuilt Rust DLL at: ${RUST_PREBUILT_DLL_ABS}")
+    message(STATUS "Checking for prebuilt Rust LIB at: ${RUST_PREBUILT_IMPORT_LIB_ABS}")
     if(EXISTS "${RUST_PREBUILT_DLL_ABS}" AND EXISTS "${RUST_PREBUILT_IMPORT_LIB_ABS}")
         set(USE_PREBUILT_RUST TRUE)
         set(RUST_DLL_PATH "${RUST_PREBUILT_DLL_ABS}")
