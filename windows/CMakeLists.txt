@@ -4,22 +4,17 @@ cmake_minimum_required(VERSION 3.14)
 project(openvpn_flutter_windows)
 
 # Flutter configuration
-# FLUTTER_MANAGED_DIR should be defined by the main project
-# If not, we try to find it from the main project
-if(NOT DEFINED FLUTTER_MANAGED_DIR)
-    # Search from the main project directory
-    # The plugin is in .plugin_symlinks/openvpn_flutter/windows
-    # We go up to the ephemeral directory of the main project
-    # Path: .../ephemeral/.plugin_symlinks/openvpn_flutter/windows
-    get_filename_component(PLUGIN_DIR "${CMAKE_CURRENT_SOURCE_DIR}" DIRECTORY)
-    # PLUGIN_DIR = .../openvpn_flutter
-    get_filename_component(SYMLINKS_DIR "${PLUGIN_DIR}" DIRECTORY)
-    # SYMLINKS_DIR = .../.plugin_symlinks
-    get_filename_component(EPHEMERAL_DIR "${SYMLINKS_DIR}" DIRECTORY)
-    # EPHEMERAL_DIR = .../ephemeral
-    # FLUTTER_MANAGED_DIR should be .../ephemeral/flutter/ephemeral
-    set(FLUTTER_MANAGED_DIR "${EPHEMERAL_DIR}/flutter/ephemeral")
-endif()
+# Calculate EPHEMERAL_DIR from the plugin's location
+# The plugin is in .plugin_symlinks/openvpn_flutter/windows
+# Path: .../ephemeral/.plugin_symlinks/openvpn_flutter/windows
+get_filename_component(PLUGIN_DIR "${CMAKE_CURRENT_SOURCE_DIR}" DIRECTORY)
+# PLUGIN_DIR = .../openvpn_flutter
+get_filename_component(SYMLINKS_DIR "${PLUGIN_DIR}" DIRECTORY)
+# SYMLINKS_DIR = .../.plugin_symlinks
+get_filename_component(EPHEMERAL_DIR "${SYMLINKS_DIR}" DIRECTORY ABSOLUTE)
+# EPHEMERAL_DIR = .../ephemeral (e.g., windows/flutter/ephemeral) - now absolute
+# FLUTTER_MANAGED_DIR is the same as EPHEMERAL_DIR for consistency
+set(FLUTTER_MANAGED_DIR "${EPHEMERAL_DIR}")
 
 # Note: generated_plugin_registrant.cmake is included by the main CMakeLists.txt
 # of the Flutter project, not by the plugin. We don't need to include it here.
@@ -86,7 +81,11 @@ add_library(${PLUGIN_TARGET_NAME} SHARED
 )
 
 # Include directories
-target_include_directories(${PLUGIN_TARGET_NAME} PRIVATE "${FLUTTER_MANAGED_DIR}")
+# EPHEMERAL_DIR points to flutter/ephemeral, headers are in cpp_client_wrapper/include/flutter/
+target_include_directories(${PLUGIN_TARGET_NAME} PRIVATE 
+    "${EPHEMERAL_DIR}"
+    "${EPHEMERAL_DIR}/cpp_client_wrapper/include"
+)
 
 # Link with Flutter
 target_link_libraries(${PLUGIN_TARGET_NAME} PRIVATE flutter flutter_wrapper_plugin)
@@ -98,9 +97,7 @@ target_link_libraries(${PLUGIN_TARGET_NAME} PRIVATE "${RUST_IMPORT_LIB_PATH}")
 add_dependencies(${PLUGIN_TARGET_NAME} rust_lib)
 
 # Copy Rust DLL to output directory
-add_custom_command(TARGET ${PLUGIN_TARGET_NAME} POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-    "${RUST_DLL_PATH}"
-    "$<TARGET_FILE_DIR:${PLUGIN_TARGET_NAME}>"
-)
+# Register the DLL to be installed with the plugin
+# Flutter will handle the installation during the install step
+set(openvpn_flutter_bundled_libraries "${RUST_DLL_PATH}" PARENT_SCOPE)
 

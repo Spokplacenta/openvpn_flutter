@@ -1,9 +1,9 @@
 #ifndef OPENVPN_FLUTTER_PLUGIN_H_
 #define OPENVPN_FLUTTER_PLUGIN_H_
 
-#include <flutter/method-channel.h>
-#include <flutter/event-channel.h>
-#include <flutter/plugin-registrar-windows.h>
+#include <flutter/method_channel.h>
+#include <flutter/event_channel.h>
+#include <flutter/plugin_registrar_windows.h>
 
 #include <memory>
 #include <string>
