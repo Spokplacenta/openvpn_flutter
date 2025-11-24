@@ -407,17 +407,31 @@ class WindowsBinaryManager {
   static Future<bool> _deployEmbeddedBinary({
     Function(double progress)? onProgress,
   }) async {
-    ByteData data;
-    try {
-      data = await rootBundle.load(embeddedAssetPath);
-    } on FlutterError catch (e) {
-      // Asset not bundled, log the error for debugging
-      print('⚠️ [OpenVPN] Asset non trouvé: $embeddedAssetPath - $e');
-      // Asset not bundled, caller will fall back to download.
-      return false;
-    } catch (e) {
-      // Other errors
-      print('⚠️ [OpenVPN] Erreur lors du chargement de l\'asset: $e');
+    ByteData? data;
+    
+    // Try multiple possible paths for plugin assets
+    final possiblePaths = [
+      embeddedAssetPath, // packages/openvpn_flutter/assets/openvpn/windows/openvpn.exe.bin
+      'assets/openvpn/windows/openvpn.exe.bin', // Direct path (might work in some cases)
+    ];
+    
+    for (final assetPath in possiblePaths) {
+      try {
+        data = await rootBundle.load(assetPath);
+        print('✅ [OpenVPN] Asset trouvé avec le chemin: $assetPath');
+        break; // Success, exit the loop
+      } on FlutterError catch (e) {
+        print('⚠️ [OpenVPN] Tentative avec $assetPath échouée: $e');
+        continue; // Try next path
+      } catch (e) {
+        print('⚠️ [OpenVPN] Erreur avec $assetPath: $e');
+        continue; // Try next path
+      }
+    }
+    
+    // If we didn't successfully load any asset
+    if (data == null) {
+      print('❌ [OpenVPN] Aucun asset trouvé avec les chemins testés: $possiblePaths');
       return false;
     }
 
