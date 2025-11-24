@@ -4,13 +4,10 @@
 #include <flutter/method_channel.h>
 #include <flutter/event_channel.h>
 #include <flutter/plugin_registrar_windows.h>
+#include <flutter_plugin_registrar.h>
 
 #include <memory>
 #include <string>
-
-// Forward declaration for C API
-struct FlutterDesktopPluginRegistrar;
-typedef void* FlutterDesktopPluginRegistrarRef;
 
 namespace flutter {
 
