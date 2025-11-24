@@ -8,6 +8,9 @@
 #include <memory>
 #include <string>
 
+// Forward declaration for C API
+struct FlutterDesktopPluginRegistrar;
+
 namespace flutter {
 
 class OpenvpnFlutterPlugin : public Plugin {
@@ -33,6 +36,10 @@ class OpenvpnFlutterPlugin : public Plugin {
 };
 
 }  // namespace flutter
+
+// C API export function
+extern "C" __declspec(dllexport) void OpenvpnFlutterPluginRegisterWithRegistrar(
+    FlutterDesktopPluginRegistrarRef registrar);
 
 #endif  // OPENVPN_FLUTTER_PLUGIN_H_
 
