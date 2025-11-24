@@ -10,7 +10,7 @@
 
 namespace flutter {
 
-class OpenvpnFlutterPlugin {
+class OpenvpnFlutterPlugin : public Plugin {
  public:
   static void RegisterWithRegistrar(PluginRegistrarWindows *registrar);
 
