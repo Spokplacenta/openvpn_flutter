@@ -89,9 +89,11 @@ add_library(${PLUGIN_TARGET_NAME} SHARED
 
 # Include directories
 # EPHEMERAL_DIR points to flutter/ephemeral, headers are in cpp_client_wrapper/include/flutter/
+# Also include the plugin directory itself so generated_plugin_registrant.cc can find the header
 target_include_directories(${PLUGIN_TARGET_NAME} PRIVATE 
     "${EPHEMERAL_DIR}"
     "${EPHEMERAL_DIR}/cpp_client_wrapper/include"
+    "${CMAKE_CURRENT_SOURCE_DIR}"
 )
 
 # Link with Flutter
