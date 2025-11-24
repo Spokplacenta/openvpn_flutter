@@ -213,6 +213,7 @@ class WindowsBinaryManager {
         if (deployed) {
           return binaryPath;
         }
+        // If deployed is false, asset was not found - this is handled below
       } catch (e) {
         embeddedError =
             Exception('Échec du déploiement du binaire OpenVPN embarqué: $e');
@@ -408,8 +409,14 @@ class WindowsBinaryManager {
     ByteData data;
     try {
       data = await rootBundle.load(embeddedAssetPath);
-    } on FlutterError {
+    } on FlutterError catch (e) {
+      // Asset not bundled, log the error for debugging
+      print('⚠️ [OpenVPN] Asset non trouvé: $embeddedAssetPath - $e');
       // Asset not bundled, caller will fall back to download.
+      return false;
+    } catch (e) {
+      // Other errors
+      print('⚠️ [OpenVPN] Erreur lors du chargement de l\'asset: $e');
       return false;
     }
 
