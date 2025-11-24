@@ -37,7 +37,8 @@ endif()
 
 set(RUST_BUILD_OUTPUT_DIR "${RUST_TARGET_DIR}/${RUST_TARGET}/${RUST_BUILD_TYPE}")
 set(RUST_DLL_NAME "${RUST_LIB_NAME}.dll")
-set(RUST_IMPORT_LIB_NAME "${RUST_LIB_NAME}.lib")
+# Rust generates .dll.lib as the import library name, not just .lib
+set(RUST_IMPORT_LIB_NAME "${RUST_LIB_NAME}.dll.lib")
 set(RUST_DLL_PATH "${RUST_BUILD_OUTPUT_DIR}/${RUST_DLL_NAME}")
 set(RUST_IMPORT_LIB_PATH "${RUST_BUILD_OUTPUT_DIR}/${RUST_IMPORT_LIB_NAME}")
 
