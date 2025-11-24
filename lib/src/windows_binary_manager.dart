@@ -1,6 +1,6 @@
 import 'dart:io';
 import 'dart:typed_data';
-import 'package:flutter/foundation.dart' show FlutterError;
+import 'package:flutter/foundation.dart' show FlutterError, debugPrint;
 import 'package:flutter/services.dart' show rootBundle;
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
@@ -432,20 +432,53 @@ class WindowsBinaryManager {
     for (final assetPath in possiblePaths) {
       try {
         data = await rootBundle.load(assetPath);
-        print('✅ [OpenVPN] Asset trouvé avec le chemin: $assetPath');
+        // Use debugPrint for better visibility in release builds
+        debugPrint('✅ [OpenVPN] Asset trouvé avec le chemin: $assetPath (${data.lengthInBytes} bytes)');
         break; // Success, exit the loop
       } on FlutterError catch (e) {
-        print('⚠️ [OpenVPN] Tentative avec $assetPath échouée: $e');
+        debugPrint('⚠️ [OpenVPN] Tentative avec $assetPath échouée: $e');
         continue; // Try next path
       } catch (e) {
-        print('⚠️ [OpenVPN] Erreur avec $assetPath: $e');
+        debugPrint('⚠️ [OpenVPN] Erreur avec $assetPath: $e');
         continue; // Try next path
       }
     }
     
-    // If we didn't successfully load any asset
+    // If we didn't successfully load any asset, try alternative method
     if (data == null) {
-      print('❌ [OpenVPN] Aucun asset trouvé avec les chemins testés: $possiblePaths');
+      debugPrint('❌ [OpenVPN] Aucun asset trouvé avec rootBundle. Tentative alternative...');
+      
+      // Try to find the asset file directly in the build directory
+      try {
+        final executablePath = Platform.resolvedExecutable;
+        final executableDir = File(executablePath).parent;
+        final assetFile = File(path.join(
+          executableDir.path,
+          'data',
+          'flutter_assets',
+          'packages',
+          'openvpn_flutter',
+          'assets',
+          'openvpn',
+          'windows',
+          'openvpn.exe.bin'
+        ));
+        
+        if (await assetFile.exists()) {
+          debugPrint('✅ [OpenVPN] Asset trouvé directement dans le répertoire de build');
+          final bytes = await assetFile.readAsBytes();
+          data = ByteData.view(bytes.buffer);
+        } else {
+          debugPrint('❌ [OpenVPN] Asset non trouvé dans: ${assetFile.path}');
+        }
+      } catch (e) {
+        debugPrint('❌ [OpenVPN] Erreur lors de la recherche alternative: $e');
+      }
+    }
+    
+    // Final check
+    if (data == null) {
+      debugPrint('❌ [OpenVPN] Aucun asset trouvé avec les chemins testés: $possiblePaths');
       return false;
     }
 
