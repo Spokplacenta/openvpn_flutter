@@ -1,9 +1,9 @@
 #include "openvpn_flutter_plugin.h"
 
-#include <flutter/method-channel.h>
-#include <flutter/event-channel.h>
-#include <flutter/plugin-registrar-windows.h>
-#include <flutter/standard-method-codec.h>
+#include <flutter/method_channel.h>
+#include <flutter/event_channel.h>
+#include <flutter/plugin_registrar_windows.h>
+#include <flutter/standard_method_codec.h>
 #include <windows.h>
 
 #include <memory>
