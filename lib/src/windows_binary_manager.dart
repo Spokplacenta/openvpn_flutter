@@ -214,11 +214,25 @@ class WindowsBinaryManager {
         if (deployed) {
           return binaryPath;
         }
-        // If deployed is false, asset was not found - this is handled below
+        // If deployed is false, asset was not found
+        embeddedError = Exception(
+          'Le binaire OpenVPN embarqué n\'a pas pu être déployé. '
+          'Vérifiez que le fichier assets/openvpn/windows/openvpn.exe.bin existe '
+          'et est inclus dans le build de l\'application.'
+        );
       } catch (e) {
         embeddedError =
             Exception('Échec du déploiement du binaire OpenVPN embarqué: $e');
       }
+    }
+
+    // If embedded binary failed and we prefer it, don't try to download
+    if (preferEmbeddedBinary && embeddedError != null) {
+      throw Exception(
+        'Impossible d\'utiliser le binaire OpenVPN embarqué. '
+        'Le téléchargement automatique est désactivé. '
+        'Erreur: ${embeddedError.toString()}'
+      );
     }
 
     try {
