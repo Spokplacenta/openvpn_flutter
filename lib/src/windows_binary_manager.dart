@@ -436,7 +436,7 @@ class WindowsBinaryManager {
     }
 
     // At this point, data is guaranteed to be non-null
-    final loadedData = data!;
+    final loadedData = data;
     
     if (loadedData.lengthInBytes == 0) {
       throw Exception(
