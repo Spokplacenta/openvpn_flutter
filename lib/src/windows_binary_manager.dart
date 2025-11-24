@@ -16,8 +16,9 @@ class WindowsBinaryManager {
   /// Path to the embedded OpenVPN binary asset inside the Flutter bundle.
   /// Override the file located at assets/openvpn/windows/openvpn.exe.bin
   /// with a trusted executable before distributing the app.
+  /// Note: For plugin assets, the path must include 'packages/plugin_name/'
   static const String embeddedAssetPath =
-      'assets/openvpn/windows/openvpn.exe.bin';
+      'packages/openvpn_flutter/assets/openvpn/windows/openvpn.exe.bin';
 
   /// Indicates whether we should attempt to deploy the embedded asset before
   /// falling back to the legacy download mechanism.
