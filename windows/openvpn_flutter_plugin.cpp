@@ -2,6 +2,7 @@
 
 #include <flutter/method_channel.h>
 #include <flutter/event_channel.h>
+#include <flutter/event_stream_handler_functions.h>
 #include <flutter/plugin_registrar_windows.h>
 #include <flutter/standard_method_codec.h>
 #include <windows.h>
@@ -68,7 +69,7 @@ void OpenvpnFlutterPlugin::SetupEventChannel(
           &StandardMethodCodec::GetInstance());
 
   auto event_handler = std::make_unique<
-      StreamHandler<EncodableValue>>(
+      StreamHandlerFunctions<EncodableValue>>(
       [this](const EncodableValue* arguments,
              std::unique_ptr<EventSink<EncodableValue>>&& events)
           -> std::unique_ptr<StreamHandlerError<EncodableValue>> {
