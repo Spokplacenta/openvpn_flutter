@@ -435,7 +435,10 @@ class WindowsBinaryManager {
       return false;
     }
 
-    if (data.lengthInBytes == 0) {
+    // At this point, data is guaranteed to be non-null
+    final loadedData = data!;
+    
+    if (loadedData.lengthInBytes == 0) {
       throw Exception(
           'L’asset OpenVPN embarqué est vide. Remplace openvpn.exe.bin par un '
           'exécutable valide avant distribution.');
@@ -446,7 +449,7 @@ class WindowsBinaryManager {
     final tempFile = File(tempPath);
 
     await tempFile.writeAsBytes(
-      data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes),
+      loadedData.buffer.asUint8List(loadedData.offsetInBytes, loadedData.lengthInBytes),
     );
 
     await _verifyHash(tempFile);
