@@ -24,7 +24,10 @@ set(RUST_DIR "${CMAKE_CURRENT_SOURCE_DIR}/rust")
 set(RUST_TARGET "x86_64-pc-windows-msvc")
 set(RUST_TARGET_DIR "${RUST_DIR}/target")
 set(RUST_LIB_NAME "openvpn_flutter_rust")
-option(OPENVPN_FLUTTER_USE_PREBUILT_RUST "Use prebuilt Rust artifacts if available" ON)
+
+# IMPORTANT: pour le debug, on force la compilation locale du Rust
+# plutôt que d'utiliser les DLL précompilées.
+option(OPENVPN_FLUTTER_USE_PREBUILT_RUST "Use prebuilt Rust artifacts if available" OFF)
 
 # Determine build mode (debug/release)
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
@@ -47,21 +50,8 @@ set(RUST_PREBUILT_DLL "${RUST_PREBUILT_DIR}/${RUST_DLL_NAME}")
 set(RUST_PREBUILT_IMPORT_LIB "${RUST_PREBUILT_DIR}/${RUST_IMPORT_LIB_NAME}")
 
 set(USE_PREBUILT_RUST FALSE)
-if(OPENVPN_FLUTTER_USE_PREBUILT_RUST)
-    # Check if files exist using relative paths first (more reliable with symlinks)
-    if(EXISTS "${RUST_PREBUILT_DLL}" AND EXISTS "${RUST_PREBUILT_IMPORT_LIB}")
-        # Convert to absolute path only after confirming existence
-        get_filename_component(RUST_PREBUILT_DLL_ABS "${RUST_PREBUILT_DLL}" ABSOLUTE)
-        get_filename_component(RUST_PREBUILT_IMPORT_LIB_ABS "${RUST_PREBUILT_IMPORT_LIB}" ABSOLUTE)
-        set(USE_PREBUILT_RUST TRUE)
-        set(RUST_DLL_PATH "${RUST_PREBUILT_DLL_ABS}")
-        set(RUST_IMPORT_LIB_PATH "${RUST_PREBUILT_IMPORT_LIB_ABS}")
-        message(STATUS "Using prebuilt Rust artifacts from: ${RUST_PREBUILT_DLL_ABS}")
-    else()
-        get_filename_component(RUST_PREBUILT_DLL_ABS "${RUST_PREBUILT_DLL}" ABSOLUTE)
-        message(WARNING "Prebuilt Rust artifacts not found (${RUST_PREBUILT_DLL_ABS}). Building locally via cargo.")
-    endif()
-endif()
+# NOTE: même si des artefacts précompilés existent, on ne les utilise plus
+# pour s'assurer que le code Rust modifié est bien pris en compte.
 
 if(NOT USE_PREBUILT_RUST)
     # Build the Rust library
@@ -88,12 +78,15 @@ add_library(${PLUGIN_TARGET_NAME} SHARED
 )
 
 # Include directories
-# EPHEMERAL_DIR points to flutter/ephemeral, headers are in cpp_client_wrapper/include/flutter/
-# Also include the plugin directory itself so generated_plugin_registrant.cc can find the header
-target_include_directories(${PLUGIN_TARGET_NAME} PRIVATE 
-    "${EPHEMERAL_DIR}"
-    "${EPHEMERAL_DIR}/cpp_client_wrapper/include"
-    "${CMAKE_CURRENT_SOURCE_DIR}"
+# - PUBLIC: expose the plugin's root dir so apps can include
+#   "openvpn_flutter/openvpn_flutter_plugin.h"
+# - PRIVATE: Flutter generated headers and wrapper.
+target_include_directories(${PLUGIN_TARGET_NAME}
+    PUBLIC
+        "${CMAKE_CURRENT_SOURCE_DIR}"
+    PRIVATE 
+        "${EPHEMERAL_DIR}"
+        "${EPHEMERAL_DIR}/cpp_client_wrapper/include"
 )
 
 # Link with Flutter

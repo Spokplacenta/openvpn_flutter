@@ -6,6 +6,10 @@
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int};
 use std::ptr;
+use std::io::Write;
+use std::sync::OnceLock;
+
+use tokio::runtime::Runtime;
 
 mod openvpn;
 mod error;
@@ -14,6 +18,27 @@ mod manager;
 pub use openvpn::{OpenVpnManager, VpnStats};
 pub use error::*;
 pub use manager::*;
+
+// Set to true to enable debug logging
+const ENABLE_DEBUG_LOGS: bool = false;
+
+// Macro helper for debug logging
+macro_rules! debug_log {
+    ($($arg:tt)*) => {
+        if ENABLE_DEBUG_LOGS {
+            eprintln!($($arg)*);
+        }
+    };
+}
+
+// Global Tokio runtime to keep async tasks (stdout/stderr readers) alive
+static RUNTIME: OnceLock<Runtime> = OnceLock::new();
+
+fn get_runtime() -> &'static Runtime {
+    RUNTIME.get_or_init(|| {
+        Runtime::new().expect("Failed to create Tokio runtime for OpenVPN")
+    })
+}
 
 /// Structure to represent VPN state
 #[repr(C)]
@@ -47,18 +72,44 @@ impl Default for VpnState {
 pub unsafe extern "C" fn openvpn_initialize(
     binary_path: *const c_char,
 ) -> c_int {
+    // Write to file immediately to verify FFI is called
+    if ENABLE_DEBUG_LOGS {
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(std::env::temp_dir().join("openvpn_rust_debug.log"))
+        {
+            let _ = writeln!(file, "[DEBUG] openvpn_initialize() called from FFI");
+            let _ = file.flush();
+        }
+    }
+    debug_log!("[DEBUG] openvpn_initialize() called");
     if binary_path.is_null() {
+        debug_log!("[DEBUG] openvpn_initialize: ERROR - null binary_path");
         return -1; // Error: null path
     }
 
     let path = match CStr::from_ptr(binary_path).to_str() {
-        Ok(s) => s,
-        Err(_) => return -2, // Error: UTF-8 conversion
+        Ok(s) => {
+            debug_log!("[DEBUG] openvpn_initialize: binary_path = '{}'", s);
+            s
+        },
+        Err(_) => {
+            debug_log!("[DEBUG] openvpn_initialize: ERROR - UTF-8 conversion failed");
+            return -2; // Error: UTF-8 conversion
+        }
     };
 
+    debug_log!("[DEBUG] openvpn_initialize: Calling init_manager()");
     match manager::init_manager(path.to_string()) {
-        Ok(_) => 0, // Success
-        Err(_) => -3, // Error: initialization failed
+        Ok(_) => {
+            debug_log!("[DEBUG] openvpn_initialize: SUCCESS");
+            0 // Success
+        },
+        Err(e) => {
+            debug_log!("[DEBUG] openvpn_initialize: ERROR - initialization failed: {:?}", e);
+            -3 // Error: initialization failed
+        }
     }
 }
 
@@ -72,53 +123,88 @@ pub unsafe extern "C" fn openvpn_connect(
     username: *const c_char,
     password: *const c_char,
 ) -> c_int {
+    debug_log!("[DEBUG] openvpn_connect() called");
     if config.is_null() {
+        debug_log!("[DEBUG] openvpn_connect: ERROR - null config");
         return -1; // Error: null config
     }
 
     let config_str = match CStr::from_ptr(config).to_str() {
-        Ok(s) => s,
-        Err(_) => return -2,
+        Ok(s) => {
+            debug_log!("[DEBUG] openvpn_connect: config length = {} bytes", s.len());
+            s
+        },
+        Err(_) => {
+            debug_log!("[DEBUG] openvpn_connect: ERROR - config UTF-8 conversion failed");
+            return -2;
+        }
     };
 
     let username_str = if !username.is_null() {
         match CStr::from_ptr(username).to_str() {
-            Ok(s) => Some(s.to_string()),
-            Err(_) => return -3,
+            Ok(s) => {
+                debug_log!("[DEBUG] openvpn_connect: username = '{}'", s);
+                Some(s.to_string())
+            },
+            Err(_) => {
+                debug_log!("[DEBUG] openvpn_connect: ERROR - username UTF-8 conversion failed");
+                return -3;
+            }
         }
     } else {
+        debug_log!("[DEBUG] openvpn_connect: username is null");
         None
     };
 
     let password_str = if !password.is_null() {
         match CStr::from_ptr(password).to_str() {
-            Ok(s) => Some(s.to_string()),
-            Err(_) => return -4,
+            Ok(s) => {
+                debug_log!("[DEBUG] openvpn_connect: password provided (length = {})", s.len());
+                Some(s.to_string())
+            },
+            Err(_) => {
+                debug_log!("[DEBUG] openvpn_connect: ERROR - password UTF-8 conversion failed");
+                return -4;
+            }
         }
     } else {
+        debug_log!("[DEBUG] openvpn_connect: password is null");
         None
     };
 
     // Get the global manager
+    debug_log!("[DEBUG] openvpn_connect: Getting global manager");
     let manager_arc = match manager::get_manager() {
-        Ok(m) => m,
-        Err(_) => return -5, // Manager not initialized
+        Ok(m) => {
+            debug_log!("[DEBUG] openvpn_connect: Manager retrieved");
+            m
+        },
+        Err(e) => {
+            debug_log!("[DEBUG] openvpn_connect: ERROR - Manager not initialized: {:?}", e);
+            return -5; // Manager not initialized
+        }
     };
 
+    debug_log!("[DEBUG] openvpn_connect: Locking manager");
     let manager_guard = manager_arc.lock().unwrap();
     if let Some(ref manager) = *manager_guard {
-        // Create a Tokio runtime to execute the async function
-        let rt = match tokio::runtime::Runtime::new() {
-            Ok(runtime) => runtime,
-            Err(_) => return -6, // Runtime creation error
-        };
+        debug_log!("[DEBUG] openvpn_connect: Manager found, using global Tokio runtime");
+        let rt = get_runtime();
 
+        debug_log!("[DEBUG] openvpn_connect: Calling manager.connect()");
         match rt.block_on(manager.connect(config_str, username_str, password_str)) {
-            Ok(_) => 0,
-            Err(_) => -7, // Connection error
+            Ok(_) => {
+                debug_log!("[DEBUG] openvpn_connect: SUCCESS");
+                0
+            },
+            Err(e) => {
+                debug_log!("[DEBUG] openvpn_connect: ERROR - Connection failed: {:?}", e);
+                -7 // Connection error
+            }
         }
     } else {
-        -5 // Manager not initialized
+        debug_log!("[DEBUG] openvpn_connect: ERROR - Manager is None");
+        -6 // Manager is None
     }
 }
 
@@ -159,10 +245,12 @@ pub unsafe extern "C" fn openvpn_disconnect() -> c_int {
 /// This function is unsafe because it manipulates C pointers
 #[no_mangle]
 pub unsafe extern "C" fn openvpn_get_stage() -> *mut c_char {
+    debug_log!("[DEBUG] openvpn_get_stage() called");
     // Get the global manager
     let manager_arc = match manager::get_manager() {
         Ok(m) => m,
         Err(_) => {
+            debug_log!("[DEBUG] openvpn_get_stage: Manager not initialized, returning 'disconnected'");
             // If manager is not initialized, return "disconnected"
             return CString::new("disconnected").unwrap().into_raw();
         }
@@ -172,15 +260,19 @@ pub unsafe extern "C" fn openvpn_get_stage() -> *mut c_char {
     if let Some(ref manager) = *manager_guard {
         match manager.get_stage() {
             Ok(stage) => {
+                debug_log!("[DEBUG] openvpn_get_stage: Returning stage '{}'", stage);
                 CString::new(stage).unwrap_or_else(|_| {
+                    debug_log!("[DEBUG] openvpn_get_stage: ERROR creating CString, returning 'disconnected'");
                     CString::new("disconnected").unwrap()
                 }).into_raw()
             },
-            Err(_) => {
+            Err(e) => {
+                debug_log!("[DEBUG] openvpn_get_stage: ERROR getting stage: {:?}, returning 'disconnected'", e);
                 CString::new("disconnected").unwrap().into_raw()
             }
         }
     } else {
+        debug_log!("[DEBUG] openvpn_get_stage: Manager is None, returning 'disconnected'");
         CString::new("disconnected").unwrap().into_raw()
     }
 }

@@ -60,6 +60,13 @@ class WindowsBinaryManager {
   /// Hash file name
   static const String hashFileName = 'openvpn_sha256.txt';
 
+  /// Environment variable allowing to override the binary path for debugging.
+  ///
+  /// If this variable is set (e.g. to a system-installed openvpn.exe),
+  /// the manager will use that path directly instead of deploying the
+  /// embedded asset or downloading anything.
+  static const String overrideEnvVar = 'OPENVPN_WINDOWS_BINARY_OVERRIDE';
+
   /// Gets the storage directory for openvpn.exe
   static Future<Directory> _getStorageDirectory() async {
     final appSupportDir = await getApplicationSupportDirectory();
@@ -72,6 +79,12 @@ class WindowsBinaryManager {
 
   /// Gets the full path to openvpn.exe
   static Future<String> getBinaryPath() async {
+    // Debug override: allow using a system-installed binary
+    final overridePath = Platform.environment[overrideEnvVar];
+    if (overridePath != null && overridePath.isNotEmpty) {
+      return overridePath;
+    }
+
     final dir = await _getStorageDirectory();
     return path.join(dir.path, binaryName);
   }
@@ -196,6 +209,23 @@ class WindowsBinaryManager {
     Function(double progress)? onProgress,
   }) async {
     final binaryPath = await getBinaryPath();
+
+    // If an override is set, don't try to deploy or download anything.
+    final overridePath = Platform.environment[overrideEnvVar];
+    if (overridePath != null && overridePath.isNotEmpty) {
+      final file = File(overridePath);
+      if (await file.exists()) {
+        debugPrint(
+          '[WindowsBinaryManager] Using override OpenVPN binary from $overridePath',
+        );
+        return overridePath;
+      } else {
+        debugPrint(
+          '[WindowsBinaryManager] Override path $overridePath does not exist; '
+          'falling back to embedded/deployed binary.',
+        );
+      }
+    }
 
     if (await binaryExists()) {
       if (!forceUpdate) {

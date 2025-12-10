@@ -13,6 +13,29 @@
 #include <string>
 #include <optional>
 #include <cstring>
+#include <fstream>
+#include <cstdlib>
+
+// Set to true to enable debug logging
+const bool ENABLE_DEBUG_LOGS = false;
+
+// Debug logging macro for Windows
+#define DEBUG_LOG(msg) do { \
+    if (ENABLE_DEBUG_LOGS) { \
+        std::string log_msg = "[DEBUG C++] "; \
+        log_msg += msg; \
+        log_msg += "\n"; \
+        OutputDebugStringA(log_msg.c_str()); \
+    } \
+} while(0)
+
+#define DEBUG_LOG_FMT(fmt, ...) do { \
+    if (ENABLE_DEBUG_LOGS) { \
+        char buf[1024]; \
+        snprintf(buf, sizeof(buf), "[DEBUG C++] " fmt "\n", __VA_ARGS__); \
+        OutputDebugStringA(buf); \
+    } \
+} while(0)
 
 // VpnState structure from Rust
 struct VpnState {
@@ -40,6 +63,18 @@ namespace flutter {
 // static
 void OpenvpnFlutterPlugin::RegisterWithRegistrar(
     PluginRegistrarWindows *registrar) {
+  // Log plugin registration
+  const char* temp_dir = std::getenv("TEMP");
+  if (temp_dir) {
+    std::string log_path = std::string(temp_dir) + "\\openvpn_cpp_debug.log";
+    std::ofstream log_file(log_path, std::ios::app | std::ios::binary);
+    if (log_file.is_open()) {
+      log_file << "[DEBUG C++] RegisterWithRegistrar called" << std::endl;
+      log_file.flush();
+      log_file.close();
+    }
+  }
+  
   auto plugin = std::make_unique<OpenvpnFlutterPlugin>();
   
   plugin->method_channel_ =
@@ -55,11 +90,24 @@ void OpenvpnFlutterPlugin::RegisterWithRegistrar(
   plugin->SetupEventChannel(registrar);
   
   registrar->AddPlugin(std::move(plugin));
+  
+  // Log plugin registration complete
+  if (temp_dir) {
+    std::string log_path = std::string(temp_dir) + "\\openvpn_cpp_debug.log";
+    std::ofstream log_file(log_path, std::ios::app | std::ios::binary);
+    if (log_file.is_open()) {
+      log_file << "[DEBUG C++] RegisterWithRegistrar complete" << std::endl;
+      log_file.flush();
+      log_file.close();
+    }
+  }
 }
 
-OpenvpnFlutterPlugin::OpenvpnFlutterPlugin() : last_emitted_stage_("disconnected") {}
+OpenvpnFlutterPlugin::OpenvpnFlutterPlugin() : last_emitted_stage_("disconnected"), stop_polling_(false) {}
 
-OpenvpnFlutterPlugin::~OpenvpnFlutterPlugin() {}
+OpenvpnFlutterPlugin::~OpenvpnFlutterPlugin() {
+  StopStagePolling();
+}
 
 void OpenvpnFlutterPlugin::SetupEventChannel(
     PluginRegistrarWindows *registrar) {
@@ -90,8 +138,22 @@ void OpenvpnFlutterPlugin::HandleMethodCall(
     std::unique_ptr<MethodResult<EncodableValue>> result) {
   
   const std::string& method = method_call.method_name();
+  DEBUG_LOG_FMT("HandleMethodCall: method = '%s'", method.c_str());
+
+  // Also write to file to be sure we see it
+  const char* temp_dir = std::getenv("TEMP");
+  if (temp_dir) {
+    std::string log_path = std::string(temp_dir) + "\\openvpn_cpp_debug.log";
+    std::ofstream log_file(log_path, std::ios::app | std::ios::binary);
+    if (log_file.is_open()) {
+      log_file << "[DEBUG C++] HandleMethodCall: method = " << method << std::endl;
+      log_file.flush();
+      log_file.close();
+    }
+  }
 
   if (method == "initialize") {
+    DEBUG_LOG("HandleMethodCall: initialize called");
     const auto* args = std::get_if<EncodableMap>(method_call.arguments());
     if (!args) {
       result->Error("InvalidArguments", "Expected map");
@@ -111,20 +173,27 @@ void OpenvpnFlutterPlugin::HandleMethodCall(
     }
 
     if (binary_path.empty()) {
+      DEBUG_LOG("HandleMethodCall: initialize - ERROR: binaryPath is empty");
       result->Error("InvalidArguments", "binaryPath is required for Windows");
       return;
     }
 
+    DEBUG_LOG_FMT("HandleMethodCall: initialize - binary_path = '%s'", binary_path.c_str());
     int ret = openvpn_initialize(binary_path.c_str());
+    DEBUG_LOG_FMT("HandleMethodCall: initialize - openvpn_initialize returned %d", ret);
     if (ret == 0) {
+      DEBUG_LOG("HandleMethodCall: initialize - SUCCESS");
       result->Success(EncodableValue("disconnected"));
     } else {
       std::string error_msg = "Failed to initialize OpenVPN (error code: " + std::to_string(ret) + ")";
+      DEBUG_LOG_FMT("HandleMethodCall: initialize - ERROR: %s", error_msg.c_str());
       result->Error("InitializationFailed", error_msg);
     }
   } else if (method == "connect") {
+    DEBUG_LOG("HandleMethodCall: connect called");
     const auto* args = std::get_if<EncodableMap>(method_call.arguments());
     if (!args) {
+      DEBUG_LOG("HandleMethodCall: connect - ERROR: Expected map");
       result->Error("InvalidArguments", "Expected map");
       return;
     }
@@ -157,51 +226,72 @@ void OpenvpnFlutterPlugin::HandleMethodCall(
       }
     }
 
+    DEBUG_LOG_FMT("HandleMethodCall: connect - config length = %zu", config.length());
+    DEBUG_LOG_FMT("HandleMethodCall: connect - username provided = %s", username.empty() ? "NO" : "YES");
+    DEBUG_LOG_FMT("HandleMethodCall: connect - password provided = %s", password.empty() ? "NO" : "YES");
+
     if (config.empty()) {
+      DEBUG_LOG("HandleMethodCall: connect - ERROR: config is empty");
       result->Error("InvalidArguments", "config is required");
       return;
     }
 
+    DEBUG_LOG("HandleMethodCall: connect - Calling openvpn_connect()");
     int ret = openvpn_connect(
         config.c_str(),
         username.empty() ? nullptr : username.c_str(),
         password.empty() ? nullptr : password.c_str()
     );
+    DEBUG_LOG_FMT("HandleMethodCall: connect - openvpn_connect returned %d", ret);
 
     if (ret == 0) {
+      DEBUG_LOG("HandleMethodCall: connect - SUCCESS, emitting current stage");
       result->Success(nullptr);
       // Check and emit current stage
       EmitCurrentStage();
+      // Start polling for stage changes
+      StartStagePolling();
     } else {
       std::string error_msg = "Failed to connect (error code: " + std::to_string(ret) + ")";
+      DEBUG_LOG_FMT("HandleMethodCall: connect - ERROR: %s", error_msg.c_str());
       result->Error("ConnectionFailed", error_msg);
     }
   } else if (method == "disconnect") {
+    // Stop polling before disconnecting
+    StopStagePolling();
     int ret = openvpn_disconnect();
     if (ret == 0) {
       result->Success(nullptr);
       // Emit a disconnection event
       if (event_sink_) {
         event_sink_->Success(EncodableValue("disconnected"));
+        last_emitted_stage_ = "disconnected";
       }
     } else {
       std::string error_msg = "Failed to disconnect (error code: " + std::to_string(ret) + ")";
       result->Error("DisconnectFailed", error_msg);
     }
   } else if (method == "stage") {
+    DEBUG_LOG("HandleMethodCall: stage called");
     char* stage = openvpn_get_stage();
     if (stage) {
       std::string stage_str(stage);
+      DEBUG_LOG_FMT("HandleMethodCall: stage - got stage '%s'", stage_str.c_str());
       openvpn_free_string(stage);
       result->Success(EncodableValue(stage_str));
       // Emit stage if different from last emitted
       if (stage_str != last_emitted_stage_) {
+        DEBUG_LOG_FMT("HandleMethodCall: stage - emitting stage change from '%s' to '%s'", 
+                      last_emitted_stage_.c_str(), stage_str.c_str());
         last_emitted_stage_ = stage_str;
         if (event_sink_) {
           event_sink_->Success(EncodableValue(last_emitted_stage_));
         }
+      } else {
+        DEBUG_LOG("HandleMethodCall: stage - stage unchanged, not emitting");
       }
     } else {
+      DEBUG_LOG("HandleMethodCall: stage - stage is null, returning 'disconnected'");
       result->Success(EncodableValue("disconnected"));
     }
   } else if (method == "status") {
@@ -244,21 +334,80 @@ void OpenvpnFlutterPlugin::HandleMethodCall(
 }
 
 void OpenvpnFlutterPlugin::EmitCurrentStage() {
+  DEBUG_LOG("EmitCurrentStage() called");
   if (!event_sink_) {
+    DEBUG_LOG("EmitCurrentStage: event_sink_ is null, returning");
     return;
   }
   
   char* stage = openvpn_get_stage();
   if (stage) {
     std::string stage_str(stage);
+    DEBUG_LOG_FMT("EmitCurrentStage: got stage '%s'", stage_str.c_str());
     openvpn_free_string(stage);
     
     // Emit only if different from last emitted
     if (stage_str != last_emitted_stage_) {
+      DEBUG_LOG_FMT("EmitCurrentStage: emitting stage change from '%s' to '%s'", 
+                    last_emitted_stage_.c_str(), stage_str.c_str());
       last_emitted_stage_ = stage_str;
       event_sink_->Success(EncodableValue(stage_str));
+    } else {
+      DEBUG_LOG("EmitCurrentStage: stage unchanged, not emitting");
+    }
+  } else {
+    DEBUG_LOG("EmitCurrentStage: stage is null");
+  }
+}
+
+void OpenvpnFlutterPlugin::StartStagePolling() {
+  DEBUG_LOG("StartStagePolling() called");
+  StopStagePolling();  // Stop any existing polling
+  stop_polling_ = false;
+  stage_polling_thread_ = std::thread(&OpenvpnFlutterPlugin::StagePollingThread, this);
+  DEBUG_LOG("StartStagePolling: polling thread started");
+}
+
+void OpenvpnFlutterPlugin::StopStagePolling() {
+  DEBUG_LOG("StopStagePolling() called");
+  if (stop_polling_) {
+    return;  // Already stopped
+  }
+  stop_polling_ = true;
+  if (stage_polling_thread_.joinable()) {
+    stage_polling_thread_.join();
+    DEBUG_LOG("StopStagePolling: polling thread stopped");
+  }
+}
+
+void OpenvpnFlutterPlugin::StagePollingThread() {
+  DEBUG_LOG("StagePollingThread: started");
+  while (!stop_polling_) {
+    // Check stage every 500ms
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    
+    if (stop_polling_) {
+      break;
+    }
+    
+    // Get current stage from Rust
+    char* stage = openvpn_get_stage();
+    if (stage) {
+      std::string stage_str(stage);
+      openvpn_free_string(stage);
+      
+      // Emit if different from last emitted
+      if (stage_str != last_emitted_stage_) {
+        DEBUG_LOG_FMT("StagePollingThread: stage changed from '%s' to '%s'", 
+                      last_emitted_stage_.c_str(), stage_str.c_str());
+        last_emitted_stage_ = stage_str;
+        if (event_sink_) {
+          event_sink_->Success(EncodableValue(stage_str));
+        }
+      }
     }
   }
+  DEBUG_LOG("StagePollingThread: ended");
 }
 
 }  // namespace flutter
