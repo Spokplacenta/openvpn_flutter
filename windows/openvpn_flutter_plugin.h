@@ -8,6 +8,9 @@
 
 #include <memory>
 #include <string>
+#include <thread>
+#include <atomic>
+#include <chrono>
 
 namespace flutter {
 
@@ -26,11 +29,16 @@ class OpenvpnFlutterPlugin : public Plugin {
   
   void SetupEventChannel(PluginRegistrarWindows *registrar);
   void EmitCurrentStage();  // Checks and emits current stage if different
+  void StartStagePolling();  // Start polling for stage changes
+  void StopStagePolling();   // Stop polling for stage changes
+  void StagePollingThread(); // Thread function for polling
 
   std::unique_ptr<MethodChannel<EncodableValue>> method_channel_;
   std::unique_ptr<EventChannel<EncodableValue>> event_channel_;
   std::unique_ptr<EventSink<EncodableValue>> event_sink_;
   std::string last_emitted_stage_;  // Last emitted stage to avoid duplicates
+  std::thread stage_polling_thread_;  // Thread for polling stage changes
+  std::atomic<bool> stop_polling_;    // Flag to stop polling
 };
 
 }  // namespace flutter

@@ -9,7 +9,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 # Pour la gestion des processus (Runtime + I/O + process)
-tokio = { version = "1.35", features = ["rt-multi-thread", "process", "io-util", "sync"] }
+tokio = { version = "1.35", features = ["rt-multi-thread", "process", "io-util", "sync", "time"] }
 # Pour la gestion des fichiers et chemins
 # std::fs et std::path sont suffisants, mais on peut ajouter des helpers
 # Pour la gestion des erreurs

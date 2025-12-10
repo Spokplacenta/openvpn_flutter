@@ -1,0 +1,14 @@
+C:\Users\info18\Dev\openvpn_flutter\windows\rust\target\release\deps\serde-cb4a88164ca92b3c.d: C:\Users\info18\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\lib.rs C:\Users\info18\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\integer128.rs C:\Users\info18\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\mod.rs C:\Users\info18\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\de.rs C:\Users\info18\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\ser.rs C:\Users\info18\Dev\openvpn_flutter\windows\rust\target\release\build\serde-1c99c9f68dd3d434\out/private.rs
+
+C:\Users\info18\Dev\openvpn_flutter\windows\rust\target\release\deps\libserde-cb4a88164ca92b3c.rlib: C:\Users\info18\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\lib.rs C:\Users\info18\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\integer128.rs C:\Users\info18\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\mod.rs C:\Users\info18\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\de.rs C:\Users\info18\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\ser.rs C:\Users\info18\Dev\openvpn_flutter\windows\rust\target\release\build\serde-1c99c9f68dd3d434\out/private.rs
+
+C:\Users\info18\Dev\openvpn_flutter\windows\rust\target\release\deps\libserde-cb4a88164ca92b3c.rmeta: C:\Users\info18\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\lib.rs C:\Users\info18\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\integer128.rs C:\Users\info18\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\mod.rs C:\Users\info18\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\de.rs C:\Users\info18\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\ser.rs C:\Users\info18\Dev\openvpn_flutter\windows\rust\target\release\build\serde-1c99c9f68dd3d434\out/private.rs
+
+C:\Users\info18\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\lib.rs:
+C:\Users\info18\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\integer128.rs:
+C:\Users\info18\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\mod.rs:
+C:\Users\info18\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\de.rs:
+C:\Users\info18\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\ser.rs:
+C:\Users\info18\Dev\openvpn_flutter\windows\rust\target\release\build\serde-1c99c9f68dd3d434\out/private.rs:
+
+# env-dep:OUT_DIR=C:\\Users\\info18\\Dev\\openvpn_flutter\\windows\\rust\\target\\release\\build\\serde-1c99c9f68dd3d434\\out
