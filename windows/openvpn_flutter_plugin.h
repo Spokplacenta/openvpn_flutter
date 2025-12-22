@@ -1,16 +1,20 @@
 #ifndef OPENVPN_FLUTTER_PLUGIN_H_
 #define OPENVPN_FLUTTER_PLUGIN_H_
 
-#include <flutter/method-channel.h>
-#include <flutter/event-channel.h>
-#include <flutter/plugin-registrar-windows.h>
+#include <flutter/method_channel.h>
+#include <flutter/event_channel.h>
+#include <flutter/plugin_registrar_windows.h>
+#include <flutter_plugin_registrar.h>
 
 #include <memory>
 #include <string>
+#include <thread>
+#include <atomic>
+#include <chrono>
 
 namespace flutter {
 
-class OpenvpnFlutterPlugin {
+class OpenvpnFlutterPlugin : public Plugin {
  public:
   static void RegisterWithRegistrar(PluginRegistrarWindows *registrar);
 
@@ -25,14 +29,23 @@ class OpenvpnFlutterPlugin {
   
   void SetupEventChannel(PluginRegistrarWindows *registrar);
   void EmitCurrentStage();  // Checks and emits current stage if different
+  void StartStagePolling();  // Start polling for stage changes
+  void StopStagePolling();   // Stop polling for stage changes
+  void StagePollingThread(); // Thread function for polling
 
   std::unique_ptr<MethodChannel<EncodableValue>> method_channel_;
   std::unique_ptr<EventChannel<EncodableValue>> event_channel_;
   std::unique_ptr<EventSink<EncodableValue>> event_sink_;
   std::string last_emitted_stage_;  // Last emitted stage to avoid duplicates
+  std::thread stage_polling_thread_;  // Thread for polling stage changes
+  std::atomic<bool> stop_polling_;    // Flag to stop polling
 };
 
 }  // namespace flutter
+
+// C API export function
+extern "C" __declspec(dllexport) void OpenvpnFlutterPluginRegisterWithRegistrar(
+    FlutterDesktopPluginRegistrarRef registrar);
 
 #endif  // OPENVPN_FLUTTER_PLUGIN_H_
 
