@@ -30,6 +30,3 @@
 .dart_tool/
 .packages
 build/
-
-# Documentation files (keep local only)
-*.md

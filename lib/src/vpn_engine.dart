@@ -2,9 +2,11 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
+import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:flutter/services.dart';
 import 'model/vpn_status.dart';
 import 'windows_binary_manager.dart';
+import 'windows_tap_manager.dart';
 
 ///Stages of vpn connections
 enum VPNStage {
@@ -100,10 +102,33 @@ class OpenVPN {
           "These values are required for ios.");
     }
     
-    // For Windows, ensure the binary is available
+    // For Windows, ensure the binary and TAP driver are available
     String? binaryPath;
     if (Platform.isWindows) {
       try {
+        // First, ensure TAP driver is installed
+        final tapInstalled = await WindowsTapManager.ensureTapInstalled(
+          onProgress: (progress) {
+            debugPrint('[OpenVPN] TAP installation progress: ${(progress * 100).toStringAsFixed(1)}%');
+          },
+        );
+        
+        if (!tapInstalled) {
+          // Check if we have admin privileges
+          final hasAdmin = await WindowsTapManager.hasAdminPrivileges();
+          if (!hasAdmin) {
+            throw Exception(
+                "TAP/TUN driver is not installed and administrator privileges are required to install it. "
+                "Please run the application as administrator or install the TAP driver manually from "
+                "https://openvpn.net/community-downloads/");
+          } else {
+            throw Exception(
+                "Failed to install TAP/TUN driver. Please install it manually from "
+                "https://openvpn.net/community-downloads/");
+          }
+        }
+        
+        // Then, ensure OpenVPN binary is available
         binaryPath = await WindowsBinaryManager.ensureBinary();
       } catch (e) {
         throw Exception(
