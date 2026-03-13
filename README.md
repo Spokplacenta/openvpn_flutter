@@ -97,10 +97,11 @@ You must use iOS devices instead of the simulator to connect.
 
 ## Windows Setup
 
-- La partie native Windows est composée d’un plugin Flutter (C++) et d’une bibliothèque Rust (`openvpn_flutter_rust.dll`).  
-- Depuis cette version, la DLL est distribuée précompilée (`windows/rust/prebuilt`) : un `flutter build windows` standard n’a plus besoin de Rust/rustup.
-- CMake détecte automatiquement les binaires précompilés. Pour forcer une recompilation (développement / debug), passe `-DOPENVPN_FLUTTER_USE_PREBUILT_RUST=OFF` lors de la génération CMake.
-- Pour régénérer les artefacts, exécute `cargo build --target x86_64-pc-windows-msvc --release` depuis `windows/rust`, puis copie les fichiers `.dll`/`.lib` vers `windows/rust/prebuilt/x86_64-pc-windows-msvc/release/`. La structure détaillée est documentée dans `windows/rust/prebuilt/README.md`.
+- The native Windows part is composed of a Flutter plugin (C++) and a Rust library (`openvpn_flutter_rust.dll`).  
+- Since this version, the DLL is distributed prebuilt (`windows/rust/prebuilt`): a standard `flutter build windows` no longer requires Rust/rustup.
+- CMake automatically detects prebuilt binaries. To force a rebuild (development/debug), pass `-DOPENVPN_FLUTTER_USE_PREBUILT_RUST=OFF` during CMake generation.
+- To regenerate artifacts, run `cargo build --target x86_64-pc-windows-msvc --release` from `windows/rust`, then copy `openvpn_flutter_rust.dll` and the import library (`openvpn_flutter_rust.dll.lib` or `openvpn_flutter_rust.lib`) to `windows/rust/prebuilt/x86_64-pc-windows-msvc/release/`.
+- The `windows-rust-prebuilt.yml` CI workflow checks that committed prebuilt artifacts are in sync with the Rust code.
 
 ## Recipe
 
