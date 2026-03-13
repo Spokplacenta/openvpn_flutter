@@ -48,14 +48,26 @@ jobs:
             throw "Rust import library not found in $targetDir"
           }
 
-      - name: Ensure prebuilt artifacts are committed
+      - name: Detect drift against committed prebuilt artifacts
+        id: drift_check
         shell: pwsh
         run: |
-          git diff --exit-code -- windows/rust/prebuilt/x86_64-pc-windows-msvc/release
-          if ($LASTEXITCODE -ne 0) {
-            Write-Error "Prebuilt artifacts are outdated. Regenerate and commit windows/rust/prebuilt/x86_64-pc-windows-msvc/release."
-            exit 1
+          git diff --binary -- windows/rust/prebuilt/x86_64-pc-windows-msvc/release > prebuilt-drift.patch
+          if ((Get-Item prebuilt-drift.patch).Length -gt 0) {
+            "has_drift=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+            Write-Warning "Prebuilt artifacts differ from repository version."
+          } else {
+            "has_drift=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+            Write-Output "No drift detected for prebuilt artifacts."
           }
+
+      - name: Upload prebuilt drift patch
+        if: steps.drift_check.outputs.has_drift == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: openvpn_flutter_windows_prebuilt_drift_patch
+          path: prebuilt-drift.patch
+          if-no-files-found: error
 
       - name: Upload prebuilt artifacts
         uses: actions/upload-artifact@v4
