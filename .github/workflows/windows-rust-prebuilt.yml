@@ -1,0 +1,65 @@
+name: windows-rust-prebuilt
+
+on:
+  push:
+    branches:
+      - master
+      - dev_branch
+    paths:
+      - "windows/CMakeLists.txt"
+      - "windows/rust/**"
+      - ".github/workflows/windows-rust-prebuilt.yml"
+  pull_request:
+    paths:
+      - "windows/CMakeLists.txt"
+      - "windows/rust/**"
+      - ".github/workflows/windows-rust-prebuilt.yml"
+  workflow_dispatch:
+
+jobs:
+  verify-prebuilt:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Build Rust release artifacts
+        run: cargo build --manifest-path windows/rust/Cargo.toml --target x86_64-pc-windows-msvc --release
+
+      - name: Sync generated artifacts to prebuilt
+        shell: pwsh
+        run: |
+          $targetDir = "windows/rust/target/x86_64-pc-windows-msvc/release"
+          $prebuiltDir = "windows/rust/prebuilt/x86_64-pc-windows-msvc/release"
+          New-Item -ItemType Directory -Force -Path $prebuiltDir | Out-Null
+
+          Copy-Item "$targetDir/openvpn_flutter_rust.dll" "$prebuiltDir/openvpn_flutter_rust.dll" -Force
+
+          if (Test-Path "$targetDir/openvpn_flutter_rust.dll.lib") {
+            Copy-Item "$targetDir/openvpn_flutter_rust.dll.lib" "$prebuiltDir/openvpn_flutter_rust.dll.lib" -Force
+          } elseif (Test-Path "$targetDir/openvpn_flutter_rust.lib") {
+            Copy-Item "$targetDir/openvpn_flutter_rust.lib" "$prebuiltDir/openvpn_flutter_rust.lib" -Force
+          } else {
+            throw "Rust import library not found in $targetDir"
+          }
+
+      - name: Ensure prebuilt artifacts are committed
+        shell: pwsh
+        run: |
+          git diff --exit-code -- windows/rust/prebuilt/x86_64-pc-windows-msvc/release
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "Prebuilt artifacts are outdated. Regenerate and commit windows/rust/prebuilt/x86_64-pc-windows-msvc/release."
+            exit 1
+          }
+
+      - name: Upload prebuilt artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: openvpn_flutter_windows_prebuilt_release
+          path: windows/rust/prebuilt/x86_64-pc-windows-msvc/release/*
+          if-no-files-found: error

@@ -25,9 +25,9 @@ set(RUST_TARGET "x86_64-pc-windows-msvc")
 set(RUST_TARGET_DIR "${RUST_DIR}/target")
 set(RUST_LIB_NAME "openvpn_flutter_rust")
 
-# IMPORTANT: pour le debug, on force la compilation locale du Rust
-# plutôt que d'utiliser les DLL précompilées.
-option(OPENVPN_FLUTTER_USE_PREBUILT_RUST "Use prebuilt Rust artifacts if available" OFF)
+# By default, prefer prebuilt Rust artifacts so Flutter consumers
+# do not need a local Rust toolchain for standard Windows builds.
+option(OPENVPN_FLUTTER_USE_PREBUILT_RUST "Use prebuilt Rust artifacts if available" ON)
 
 # Determine build mode (debug/release)
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
@@ -40,28 +40,58 @@ endif()
 
 set(RUST_BUILD_OUTPUT_DIR "${RUST_TARGET_DIR}/${RUST_TARGET}/${RUST_BUILD_TYPE}")
 set(RUST_DLL_NAME "${RUST_LIB_NAME}.dll")
-# Rust generates .dll.lib as the import library name, not just .lib
-set(RUST_IMPORT_LIB_NAME "${RUST_LIB_NAME}.dll.lib")
+set(RUST_IMPORT_LIB_DLLLIB_NAME "${RUST_LIB_NAME}.dll.lib")
+set(RUST_IMPORT_LIB_LIB_NAME "${RUST_LIB_NAME}.lib")
+set(RUST_BUILD_IMPORT_LIB_DLLLIB_PATH "${RUST_BUILD_OUTPUT_DIR}/${RUST_IMPORT_LIB_DLLLIB_NAME}")
+set(RUST_BUILD_IMPORT_LIB_LIB_PATH "${RUST_BUILD_OUTPUT_DIR}/${RUST_IMPORT_LIB_LIB_NAME}")
 set(RUST_DLL_PATH "${RUST_BUILD_OUTPUT_DIR}/${RUST_DLL_NAME}")
-set(RUST_IMPORT_LIB_PATH "${RUST_BUILD_OUTPUT_DIR}/${RUST_IMPORT_LIB_NAME}")
+set(RUST_IMPORT_LIB_PATH "${RUST_BUILD_IMPORT_LIB_DLLLIB_PATH}")
 
 set(RUST_PREBUILT_DIR "${RUST_DIR}/prebuilt/${RUST_TARGET}/${RUST_BUILD_TYPE}")
 set(RUST_PREBUILT_DLL "${RUST_PREBUILT_DIR}/${RUST_DLL_NAME}")
-set(RUST_PREBUILT_IMPORT_LIB "${RUST_PREBUILT_DIR}/${RUST_IMPORT_LIB_NAME}")
+set(RUST_PREBUILT_IMPORT_LIB_DLLLIB "${RUST_PREBUILT_DIR}/${RUST_IMPORT_LIB_DLLLIB_NAME}")
+set(RUST_PREBUILT_IMPORT_LIB_LIB "${RUST_PREBUILT_DIR}/${RUST_IMPORT_LIB_LIB_NAME}")
+set(RUST_PREBUILT_IMPORT_LIB "")
 
 set(USE_PREBUILT_RUST FALSE)
-# NOTE: même si des artefacts précompilés existent, on ne les utilise plus
-# pour s'assurer que le code Rust modifié est bien pris en compte.
+if(OPENVPN_FLUTTER_USE_PREBUILT_RUST)
+    if(EXISTS "${RUST_PREBUILT_IMPORT_LIB_DLLLIB}")
+        set(RUST_PREBUILT_IMPORT_LIB "${RUST_PREBUILT_IMPORT_LIB_DLLLIB}")
+    elseif(EXISTS "${RUST_PREBUILT_IMPORT_LIB_LIB}")
+        set(RUST_PREBUILT_IMPORT_LIB "${RUST_PREBUILT_IMPORT_LIB_LIB}")
+    endif()
+
+    if(EXISTS "${RUST_PREBUILT_DLL}" AND NOT "${RUST_PREBUILT_IMPORT_LIB}" STREQUAL "")
+        set(USE_PREBUILT_RUST TRUE)
+        set(RUST_DLL_PATH "${RUST_PREBUILT_DLL}")
+        set(RUST_IMPORT_LIB_PATH "${RUST_PREBUILT_IMPORT_LIB}")
+        message(STATUS "Using prebuilt Rust artifacts from: ${RUST_PREBUILT_DIR}")
+    else()
+        message(WARNING "Prebuilt Rust artifacts not found for ${RUST_BUILD_TYPE}; falling back to cargo build.")
+    endif()
+else()
+    message(STATUS "OPENVPN_FLUTTER_USE_PREBUILT_RUST=OFF, forcing local Rust build.")
+endif()
 
 if(NOT USE_PREBUILT_RUST)
     # Build the Rust library
     add_custom_command(
         OUTPUT ${RUST_DLL_PATH}
-        BYPRODUCTS ${RUST_IMPORT_LIB_PATH}
+        BYPRODUCTS ${RUST_BUILD_IMPORT_LIB_DLLLIB_PATH} ${RUST_BUILD_IMPORT_LIB_LIB_PATH}
         COMMAND cargo build --manifest-path "${RUST_DIR}/Cargo.toml" --target ${RUST_TARGET} ${CARGO_PROFILE_ARG}
         WORKING_DIRECTORY ${RUST_DIR}
         COMMENT "Building Rust library (${RUST_BUILD_TYPE})"
     )
+
+    set(RUST_DLL_PATH "${RUST_BUILD_OUTPUT_DIR}/${RUST_DLL_NAME}")
+    if(EXISTS "${RUST_BUILD_IMPORT_LIB_DLLLIB_PATH}")
+        set(RUST_IMPORT_LIB_PATH "${RUST_BUILD_IMPORT_LIB_DLLLIB_PATH}")
+    elseif(EXISTS "${RUST_BUILD_IMPORT_LIB_LIB_PATH}")
+        set(RUST_IMPORT_LIB_PATH "${RUST_BUILD_IMPORT_LIB_LIB_PATH}")
+    else()
+        # Prefer the MSVC default output naming when file does not exist yet.
+        set(RUST_IMPORT_LIB_PATH "${RUST_BUILD_IMPORT_LIB_DLLLIB_PATH}")
+    endif()
 
     # Create a target for the Rust library
     add_custom_target(rust_lib DEPENDS ${RUST_DLL_PATH})
