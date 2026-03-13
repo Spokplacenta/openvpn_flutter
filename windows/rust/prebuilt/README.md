@@ -38,9 +38,9 @@ Seuls les binaires `release` sont nécessaires pour les builds distribués (`flu
 ### Validation CI
 
 Le workflow GitHub Actions `windows-rust-prebuilt.yml` reconstruit les artefacts
-Windows et vérifie que les binaires versionnés dans `prebuilt/` sont à jour.
-Si le workflow échoue avec des différences Git, il faut régénérer et commiter
-les artefacts.
+Windows et détecte les écarts avec les binaires versionnés dans `prebuilt/`.
+En cas d'écart, le workflow publie un artefact `prebuilt-drift.patch` pour
+inspection et mise à jour du dépôt.
 
 ### Désactiver l’usage des précompilés
 
