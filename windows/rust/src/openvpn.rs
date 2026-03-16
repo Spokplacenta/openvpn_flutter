@@ -6,6 +6,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use std::fs::OpenOptions;
 use std::io::Write;
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
 use tokio::process::{Child as TokioChild, Command as TokioCommand};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use crate::error::OpenVpnError;
@@ -238,7 +240,15 @@ impl OpenVpnManager {
         }
 
         cmd.stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .stderr(Stdio::piped())
+            .stdin(Stdio::null());
+        
+        // Prevent OpenVPN from opening a visible console window on Windows.
+        #[cfg(target_os = "windows")]
+        {
+            const CREATE_NO_WINDOW: u32 = 0x08000000;
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
         
         debug_log_to_file("[DEBUG] Command prepared, spawning process...");
         
