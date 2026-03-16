@@ -50,7 +50,7 @@ async fn kill_all_openvpn_processes() {
     }
     
     // Wait a bit for Windows to release resources
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    tokio::time::sleep(Duration::from_millis(1000)).await;
 }
 
 // Set to true to enable debug logging
@@ -152,7 +152,7 @@ impl OpenVpnManager {
         
         // Wait a bit more for Windows to release the TAP adapter
         debug_log_to_file("[DEBUG] Waiting for TAP adapter to be released...");
-        tokio::time::sleep(Duration::from_millis(1500)).await;
+        tokio::time::sleep(Duration::from_millis(3000)).await;
         debug_log_to_file("[DEBUG] TAP adapter release wait completed");
 
         // Create a temporary file for the configuration
@@ -567,15 +567,15 @@ fn parse_stage_from_output(line: &str) -> Option<String> {
     } else if line_lower.contains("authentication") || line_lower.contains("auth") {
         debug_log_to_file("[DEBUG] parse_stage: Matched 'authentication/auth' -> 'authenticating'");
         Some("authenticating".to_string())
-    } else if (line_lower.contains("tap-windows") || line_lower.contains("tun/tap")) && 
-              (line_lower.contains("createfile failed") ||
-               line_lower.contains("all tap-windows6 adapters on this system are currently in use") ||
-               line_lower.contains("all tap-windows adapters") && line_lower.contains("in use") ||
-               line_lower.contains("cannot allocate tun/tap") ||
-               line_lower.contains("not found") ||
-               line_lower.contains("not available") ||
-               line_lower.contains("general failure") ||
-               line_lower.contains("error_gen_failure")) {
+    } else if line_lower.contains("preserving previous tun/tap instance") {
+        // This line can appear during normal adapter reuse.
+        None
+    } else if (line_lower.contains("tap-windows") || line_lower.contains("tun/tap"))
+        && (line_lower.contains("createfile failed on tap-windows6 device")
+            || line_lower.contains("all tap-windows6 adapters on this system are currently in use or disabled")
+            || line_lower.contains("all tap-windows6 adapters on this system are currently in use")
+            || line_lower.contains("cannot allocate tun/tap")
+            || line_lower.contains("error_gen_failure")) {
         // Specific TAP/TUN errors - these are critical
         // Note: "tap-windows6 device [name] opened" is NOT an error, it's a success message
         debug_log_to_file(&format!("[DEBUG] parse_stage: TAP/TUN error detected: {} -> 'error'", line));
