@@ -17,10 +17,14 @@ async fn kill_all_openvpn_processes() {
     debug_log_to_file("[DEBUG] Attempting to kill all OpenVPN processes...");
     
     // Use taskkill to forcefully kill all openvpn.exe processes
-    let output = TokioCommand::new("taskkill")
-        .args(&["/F", "/IM", "openvpn.exe", "/T"])
-        .output()
-        .await;
+    let mut kill_cmd = TokioCommand::new("taskkill");
+    kill_cmd.args(&["/F", "/IM", "openvpn.exe", "/T"]);
+    #[cfg(target_os = "windows")]
+    {
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        kill_cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    let output = kill_cmd.output().await;
     
     match output {
         Ok(output) => {
@@ -538,6 +542,22 @@ fn parse_stage_from_output(line: &str) -> Option<String> {
     if line_lower.contains("initialization sequence completed") {
         debug_log_to_file("[DEBUG] parse_stage: Matched 'initialization sequence completed' -> 'connected'");
         Some("connected".to_string())
+    } else if line_lower.contains("auth_failed")
+        || line_lower.contains("authentication failed")
+        || line_lower.contains("tls error")
+        || line_lower.contains("tls handshake failed")
+        || line_lower.contains("cannot resolve host address")
+        || line_lower.contains("resolve error")
+        || line_lower.contains("network is unreachable")
+        || line_lower.contains("connection timed out")
+        || line_lower.contains("connection reset")
+        || line_lower.contains("connection refused")
+        || line_lower.contains("options error")
+        || line_lower.contains("fatal")
+        || line_lower.contains("certificate verify failed")
+        || line_lower.contains("verify error") {
+        debug_log_to_file(&format!("[DEBUG] parse_stage: Critical VPN error detected: {} -> 'error'", line));
+        Some("error".to_string())
     } else if line_lower.contains("connecting") || line_lower.contains("waiting") {
         debug_log_to_file("[DEBUG] parse_stage: Matched 'connecting/waiting' -> 'connecting'");
         Some("connecting".to_string())

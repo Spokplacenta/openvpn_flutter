@@ -42,7 +42,7 @@ class WindowsTapManager {
           '-Command',
           r'Get-NetAdapter | Where-Object { $_.Name -like "*TAP*" -or $_.InterfaceDescription -like "*TAP*" } | Measure-Object | Select-Object -ExpandProperty Count'
         ],
-        runInShell: true,
+        runInShell: false,
       );
 
       if (result.exitCode == 0) {
@@ -62,7 +62,7 @@ class WindowsTapManager {
           '/f',
           'TAP-Windows',
         ],
-        runInShell: true,
+        runInShell: false,
       );
 
       if (regResult.exitCode == 0) {
@@ -144,7 +144,7 @@ class WindowsTapManager {
       final installResult = await Process.run(
         installerPath,
         ['/S'], // Silent installation
-        runInShell: true,
+        runInShell: false,
       );
 
       // Nettoyage de l'installeur
