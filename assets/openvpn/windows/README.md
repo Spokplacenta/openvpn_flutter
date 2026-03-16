@@ -1,11 +1,17 @@
-# OpenVPN binaire embarqué
+# OpenVPN binaire embarqué (Windows)
 
-Dépose ici l'archive binaire \openvpn.exe.bin\ (issue d'une version officielle OpenVPN). Ce fichier est chargé par \WindowsBinaryManager\ puis extrait vers le répertoire d'assistance de l'application.
+Dépose ici les binaires runtime OpenVPN utilisés par `WindowsBinaryManager`.
 
 Étapes recommandées :
-1. Récupère l'exécutable OpenVPN signé (par ex. openvpn.exe depuis l'installeur officiel).
-2. Renomme-le en openvpn.exe.bin sans transformation supplémentaire. Tu peux aussi le compresser toi-même mais pense à mettre à jour la logique d'extraction si nécessaire.
+1. Récupère les fichiers signés depuis une installation officielle OpenVPN (dossier `bin`).
+2. Dépose les fichiers suivants dans ce dossier d'assets :
+   - `openvpn.exe.bin` (ou `openvpn.exe`)
+   - `libcrypto-3-x64.dll` (ou `libcrypto-3-x64.dll.bin`)
+   - `libssl-3-x64.dll` (ou `libssl-3-x64.dll.bin`)
+   - `libpkcs11-helper-1.dll` (ou `libpkcs11-helper-1.dll.bin`)
 3. Mets à jour WindowsBinaryManager.targetVersion et expectedHash pour refléter cette version.
 4. Vérifie les obligations de la licence GPLv2 avant distribution.
 
-Ce dépôt contient uniquement un fichier factice pour permettre la compilation. Remplace-le avant de distribuer ton application.
+Le plugin déploie automatiquement ces DLL à côté de `openvpn.exe` au premier lancement.
+
+Ce dépôt peut contenir uniquement ce fichier de documentation selon la branche. Ajoute les binaires avant distribution.
