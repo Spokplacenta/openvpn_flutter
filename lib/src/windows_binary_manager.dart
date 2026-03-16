@@ -60,6 +60,19 @@ class WindowsBinaryManager {
   /// Hash file name
   static const String hashFileName = 'openvpn_sha256.txt';
 
+  /// OpenVPN runtime dependencies required by openvpn.exe on Windows.
+  static const List<String> requiredRuntimeDlls = [
+    'libcrypto-3-x64.dll',
+    'libssl-3-x64.dll',
+    'libpkcs11-helper-1.dll',
+  ];
+
+  /// Plugin asset base paths (package and direct paths).
+  static const List<String> _assetBasePaths = [
+    'packages/openvpn_flutter/assets/openvpn/windows',
+    'assets/openvpn/windows',
+  ];
+
   /// Environment variable allowing to override the binary path for debugging.
   ///
   /// If this variable is set (e.g. to a system-installed openvpn.exe),
@@ -176,8 +189,15 @@ class WindowsBinaryManager {
         final extractedPath = await _extractFromInstaller(file.path);
         // Replace the installer file with the extracted binary
         if (extractedPath != null && await File(extractedPath).exists()) {
+          final sourceDirectoryPath = path.dirname(extractedPath);
+          final targetDirectoryPath = path.dirname(binaryPath);
           await file.delete(); // Delete the installer
           await File(extractedPath).copy(binaryPath); // Copy the binary
+          await _copyRuntimeDllsFromDirectory(
+            sourceDirectoryPath: sourceDirectoryPath,
+            targetDirectoryPath: targetDirectoryPath,
+            failIfMissing: true,
+          );
           await File(extractedPath).delete(); // Clean up temporary file
         } else {
           throw Exception('Failed to extract openvpn.exe from installer');
@@ -231,6 +251,7 @@ class WindowsBinaryManager {
       if (!forceUpdate) {
         final needsUpdate = await WindowsBinaryManager.needsUpdate();
         if (!needsUpdate) {
+          await _ensureRuntimeDependenciesForExistingBinary(binaryPath);
           return binaryPath;
         }
       }
@@ -316,6 +337,13 @@ class WindowsBinaryManager {
     if (await hashFile.exists()) {
       await hashFile.delete();
     }
+
+    for (final dllName in requiredRuntimeDlls) {
+      final dllFile = File(path.join(dir.path, dllName));
+      if (await dllFile.exists()) {
+        await dllFile.delete();
+      }
+    }
   }
 
   static Future<void> _deleteExistingArtifacts() async {
@@ -324,6 +352,7 @@ class WindowsBinaryManager {
       path.join(dir.path, binaryName),
       path.join(dir.path, versionFileName),
       path.join(dir.path, hashFileName),
+      ...requiredRuntimeDlls.map((dll) => path.join(dir.path, dll)),
     ];
     for (final filePath in filesToDelete) {
       final file = File(filePath);
@@ -451,64 +480,11 @@ class WindowsBinaryManager {
   static Future<bool> _deployEmbeddedBinary({
     Function(double progress)? onProgress,
   }) async {
-    ByteData? data;
-    
-    // Try multiple possible paths for plugin assets
-    final possiblePaths = [
-      embeddedAssetPath, // packages/openvpn_flutter/assets/openvpn/windows/openvpn.exe.bin
-      'assets/openvpn/windows/openvpn.exe.bin', // Direct path (might work in some cases)
-    ];
-    
-    for (final assetPath in possiblePaths) {
-      try {
-        data = await rootBundle.load(assetPath);
-        // Use debugPrint for better visibility in release builds
-        debugPrint('✅ [OpenVPN] Asset trouvé avec le chemin: $assetPath (${data.lengthInBytes} bytes)');
-        break; // Success, exit the loop
-      } on FlutterError catch (e) {
-        debugPrint('⚠️ [OpenVPN] Tentative avec $assetPath échouée: $e');
-        continue; // Try next path
-      } catch (e) {
-        debugPrint('⚠️ [OpenVPN] Erreur avec $assetPath: $e');
-        continue; // Try next path
-      }
-    }
-    
-    // If we didn't successfully load any asset, try alternative method
+    final data = await _loadPluginAssetBytes('openvpn.exe.bin');
+
     if (data == null) {
-      debugPrint('❌ [OpenVPN] Aucun asset trouvé avec rootBundle. Tentative alternative...');
-      
-      // Try to find the asset file directly in the build directory
-      try {
-        final executablePath = Platform.resolvedExecutable;
-        final executableDir = File(executablePath).parent;
-        final assetFile = File(path.join(
-          executableDir.path,
-          'data',
-          'flutter_assets',
-          'packages',
-          'openvpn_flutter',
-          'assets',
-          'openvpn',
-          'windows',
-          'openvpn.exe.bin'
-        ));
-        
-        if (await assetFile.exists()) {
-          debugPrint('✅ [OpenVPN] Asset trouvé directement dans le répertoire de build');
-          final bytes = await assetFile.readAsBytes();
-          data = ByteData.view(bytes.buffer);
-        } else {
-          debugPrint('❌ [OpenVPN] Asset non trouvé dans: ${assetFile.path}');
-        }
-      } catch (e) {
-        debugPrint('❌ [OpenVPN] Erreur lors de la recherche alternative: $e');
-      }
-    }
-    
-    // Final check
-    if (data == null) {
-      debugPrint('❌ [OpenVPN] Aucun asset trouvé avec les chemins testés: $possiblePaths');
+      debugPrint(
+          '❌ [OpenVPN] Aucun asset trouvé pour openvpn.exe.bin dans les chemins plugin.');
       return false;
     }
 
@@ -537,9 +513,154 @@ class WindowsBinaryManager {
     }
     await tempFile.rename(binaryPath);
 
+    // Deploy runtime dependencies next to openvpn.exe.
+    await _deployRuntimeDllsFromAssets(Directory(path.dirname(binaryPath)));
+
     await _saveInstalledVersion(targetVersion);
     await _persistHashFile();
     onProgress?.call(1.0);
     return true;
+  }
+
+  static Future<void> _ensureRuntimeDependenciesForExistingBinary(
+      String binaryPath) async {
+    final targetDir = Directory(path.dirname(binaryPath));
+    final missing = await _missingRuntimeDlls(targetDir.path);
+    if (missing.isEmpty) {
+      return;
+    }
+
+    debugPrint(
+        '⚠️ [OpenVPN] DLL runtime manquantes détectées (${missing.join(", ")}), tentative de réparation via assets.');
+    await _deployRuntimeDllsFromAssets(targetDir, failIfMissing: true);
+  }
+
+  static Future<void> _deployRuntimeDllsFromAssets(
+    Directory targetDir, {
+    bool failIfMissing = true,
+  }) async {
+    final missing = <String>[];
+
+    for (final dllName in requiredRuntimeDlls) {
+      final data = await _loadPluginAssetBytes(dllName, allowBinSuffix: true);
+      if (data == null) {
+        missing.add(dllName);
+        continue;
+      }
+
+      final targetPath = path.join(targetDir.path, dllName);
+      final tempFile = File('$targetPath.part');
+      await tempFile.writeAsBytes(
+        data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes),
+      );
+
+      final targetFile = File(targetPath);
+      if (await targetFile.exists()) {
+        await targetFile.delete();
+      }
+      await tempFile.rename(targetPath);
+      debugPrint('✅ [OpenVPN] DLL déployée: $dllName');
+    }
+
+    if (missing.isNotEmpty && failIfMissing) {
+      throw Exception(
+        'DLL runtime OpenVPN manquantes dans les assets du plugin: ${missing.join(", ")}. '
+        'Ajoute ces fichiers dans assets/openvpn/windows/.',
+      );
+    }
+  }
+
+  static Future<ByteData?> _loadPluginAssetBytes(
+    String fileName, {
+    bool allowBinSuffix = false,
+  }) async {
+    final candidates = <String>[];
+    for (final basePath in _assetBasePaths) {
+      candidates.add('$basePath/$fileName');
+      if (allowBinSuffix && !fileName.endsWith('.bin')) {
+        candidates.add('$basePath/$fileName.bin');
+      }
+    }
+
+    for (final candidate in candidates) {
+      try {
+        final data = await rootBundle.load(candidate);
+        debugPrint(
+            '✅ [OpenVPN] Asset trouvé: $candidate (${data.lengthInBytes} bytes)');
+        return data;
+      } on FlutterError {
+        // Try next candidate.
+      } catch (e) {
+        debugPrint('⚠️ [OpenVPN] Erreur chargement asset $candidate: $e');
+      }
+    }
+    return null;
+  }
+
+  static Future<List<String>> _missingRuntimeDlls(String directoryPath) async {
+    final missing = <String>[];
+    for (final dllName in requiredRuntimeDlls) {
+      final file = File(path.join(directoryPath, dllName));
+      if (!await file.exists()) {
+        missing.add(dllName);
+      }
+    }
+    return missing;
+  }
+
+  static Future<void> _copyRuntimeDllsFromDirectory({
+    required String sourceDirectoryPath,
+    required String targetDirectoryPath,
+    bool failIfMissing = true,
+  }) async {
+    final missing = <String>[];
+
+    for (final dllName in requiredRuntimeDlls) {
+      final sourcePath = await _findFileCaseInsensitive(
+        sourceDirectoryPath,
+        dllName,
+      );
+      if (sourcePath == null) {
+        missing.add(dllName);
+        continue;
+      }
+
+      final targetPath = path.join(targetDirectoryPath, dllName);
+      await File(sourcePath).copy(targetPath);
+      debugPrint('✅ [OpenVPN] DLL copiée depuis installeur: $dllName');
+    }
+
+    if (missing.isNotEmpty && failIfMissing) {
+      throw Exception(
+        'DLL runtime manquantes dans l’installeur OpenVPN: ${missing.join(", ")}',
+      );
+    }
+  }
+
+  static Future<String?> _findFileCaseInsensitive(
+    String directoryPath,
+    String fileName,
+  ) async {
+    final expected = fileName.toLowerCase();
+    final direct = File(path.join(directoryPath, fileName));
+    if (await direct.exists()) {
+      return direct.path;
+    }
+
+    try {
+      final dir = Directory(directoryPath);
+      if (!await dir.exists()) {
+        return null;
+      }
+      await for (final entity in dir.list()) {
+        if (entity is File &&
+            path.basename(entity.path).toLowerCase() == expected) {
+          return entity.path;
+        }
+      }
+    } catch (_) {
+      // Ignore and report not found.
+    }
+    return null;
   }
 }
