@@ -60,13 +60,30 @@ extern "C" {
 
 namespace flutter {
 
+namespace {
+
+std::optional<std::string> GetEnvironmentVariable(const char* name) {
+  char* value = nullptr;
+  size_t value_length = 0;
+  const errno_t result = _dupenv_s(&value, &value_length, name);
+  if (result != 0 || value == nullptr) {
+    return std::nullopt;
+  }
+
+  std::string environment_value(value);
+  std::free(value);
+  return environment_value;
+}
+
+}  // namespace
+
 // static
 void OpenvpnFlutterPlugin::RegisterWithRegistrar(
     PluginRegistrarWindows *registrar) {
   // Log plugin registration
-  const char* temp_dir = std::getenv("TEMP");
-  if (temp_dir) {
-    std::string log_path = std::string(temp_dir) + "\\openvpn_cpp_debug.log";
+  const auto temp_dir = GetEnvironmentVariable("TEMP");
+  if (temp_dir.has_value()) {
+    std::string log_path = *temp_dir + "\\openvpn_cpp_debug.log";
     std::ofstream log_file(log_path, std::ios::app | std::ios::binary);
     if (log_file.is_open()) {
       log_file << "[DEBUG C++] RegisterWithRegistrar called" << std::endl;
@@ -92,8 +109,8 @@ void OpenvpnFlutterPlugin::RegisterWithRegistrar(
   registrar->AddPlugin(std::move(plugin));
   
   // Log plugin registration complete
-  if (temp_dir) {
-    std::string log_path = std::string(temp_dir) + "\\openvpn_cpp_debug.log";
+  if (temp_dir.has_value()) {
+    std::string log_path = *temp_dir + "\\openvpn_cpp_debug.log";
     std::ofstream log_file(log_path, std::ios::app | std::ios::binary);
     if (log_file.is_open()) {
       log_file << "[DEBUG C++] RegisterWithRegistrar complete" << std::endl;
@@ -141,9 +158,9 @@ void OpenvpnFlutterPlugin::HandleMethodCall(
   DEBUG_LOG_FMT("HandleMethodCall: method = '%s'", method.c_str());
 
   // Also write to file to be sure we see it
-  const char* temp_dir = std::getenv("TEMP");
-  if (temp_dir) {
-    std::string log_path = std::string(temp_dir) + "\\openvpn_cpp_debug.log";
+  const auto temp_dir = GetEnvironmentVariable("TEMP");
+  if (temp_dir.has_value()) {
+    std::string log_path = *temp_dir + "\\openvpn_cpp_debug.log";
     std::ofstream log_file(log_path, std::ios::app | std::ios::binary);
     if (log_file.is_open()) {
       log_file << "[DEBUG C++] HandleMethodCall: method = " << method << std::endl;
