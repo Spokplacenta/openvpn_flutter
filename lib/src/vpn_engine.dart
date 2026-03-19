@@ -6,7 +6,7 @@ import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:flutter/services.dart';
 import 'model/vpn_status.dart';
 import 'windows_binary_manager.dart';
-import 'windows_tap_manager.dart';
+import 'windows_wintun_manager.dart';
 
 ///Stages of vpn connections
 enum VPNStage {
@@ -101,58 +101,43 @@ class OpenVPN {
               localizedDescription != null,
           "These values are required for ios.");
     }
-    
-    // For Windows, ensure the binary and TAP driver are available
+
+    // For Windows, ensure the binary and Wintun runtime are available
     String? binaryPath;
     if (Platform.isWindows) {
       try {
-        // First, ensure TAP driver is installed
-        final tapInstalled = await WindowsTapManager.ensureTapInstalled(
+        // Ensure OpenVPN binary is available.
+        binaryPath = await WindowsBinaryManager.ensureBinary();
+        // Then ensure Wintun runtime is deployed next to the binary.
+        await WindowsWintunManager.ensureWintunDeployed(
           onProgress: (progress) {
-            debugPrint('[OpenVPN] TAP installation progress: ${(progress * 100).toStringAsFixed(1)}%');
+            debugPrint(
+              '[OpenVPN] Wintun deploy progress: ${(progress * 100).toStringAsFixed(1)}%',
+            );
           },
         );
-        
-        if (!tapInstalled) {
-          // Check if we have admin privileges
-          final hasAdmin = await WindowsTapManager.hasAdminPrivileges();
-          if (!hasAdmin) {
-            throw Exception(
-                "TAP/TUN driver is not installed and administrator privileges are required to install it. "
-                "Please run the application as administrator or install the TAP driver manually from "
-                "https://openvpn.net/community-downloads/");
-          } else {
-            throw Exception(
-                "Failed to install TAP/TUN driver. Please install it manually from "
-                "https://openvpn.net/community-downloads/");
-          }
-        }
-        
-        // Then, ensure OpenVPN binary is available
-        binaryPath = await WindowsBinaryManager.ensureBinary();
       } catch (e) {
-        throw Exception(
-            "Failed to ensure OpenVPN binary is available: $e. "
+        throw Exception("Failed to prepare OpenVPN runtime on Windows: $e. "
             "Please check your internet connection and try again.");
       }
     }
-    
+
     onVpnStatusChanged?.call(VpnStatus.empty());
     initialized = true;
     _initializeListener();
-    
+
     // Prepare arguments for initialize
     final Map<String, dynamic> args = {
       "groupIdentifier": groupIdentifier,
       "providerBundleIdentifier": providerBundleIdentifier,
       "localizedDescription": localizedDescription,
     };
-    
+
     // For Windows, add the binary path
     if (Platform.isWindows && binaryPath != null) {
       args["binaryPath"] = binaryPath;
     }
-    
+
     return _channelControl.invokeMethod("initialize", args).then((value) {
       Future.wait([
         status().then((value) => lastStatus?.call(value)),
@@ -268,21 +253,23 @@ class OpenVPN {
                     ? DateTime.tryParse(data["connected_on"].toString())
                     : null;
             connectedOn ??= _tempDateTime ?? DateTime.now();
-            
+
             String byteIn =
                 data["byte_in"] != null ? data["byte_in"].toString() : "0";
             String byteOut =
                 data["byte_out"] != null ? data["byte_out"].toString() : "0";
-            String packetsIn =
-                data["packets_in"] != null ? data["packets_in"].toString() : "0";
-            String packetsOut =
-                data["packets_out"] != null ? data["packets_out"].toString() : "0";
-            
+            String packetsIn = data["packets_in"] != null
+                ? data["packets_in"].toString()
+                : "0";
+            String packetsOut = data["packets_out"] != null
+                ? data["packets_out"].toString()
+                : "0";
+
             if (byteIn.trim().isEmpty) byteIn = "0";
             if (byteOut.trim().isEmpty) byteOut = "0";
             if (packetsIn.trim().isEmpty) packetsIn = "0";
             if (packetsOut.trim().isEmpty) packetsOut = "0";
-            
+
             return VpnStatus(
               connectedOn: connectedOn,
               duration: _duration(DateTime.now().difference(connectedOn).abs()),
