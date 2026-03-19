@@ -253,41 +253,40 @@ void OpenvpnFlutterPlugin::HandleMethodCall(
       return;
     }
 
-    DEBUG_LOG("HandleMethodCall: connect - Calling openvpn_connect()");
-    int ret = openvpn_connect(
-        config.c_str(),
-        username.empty() ? nullptr : username.c_str(),
-        password.empty() ? nullptr : password.c_str()
-    );
-    DEBUG_LOG_FMT("HandleMethodCall: connect - openvpn_connect returned %d", ret);
+    // Return immediately so the UI thread is never blocked.
+    // The actual FFI call runs on a background thread; the polling
+    // thread will pick up stage transitions (connecting → connected).
+    DEBUG_LOG("HandleMethodCall: connect - returning immediately, spawning bg thread");
+    result->Success(nullptr);
+    StartStagePolling();
 
-    if (ret == 0) {
-      DEBUG_LOG("HandleMethodCall: connect - SUCCESS, emitting current stage");
-      result->Success(nullptr);
-      // Check and emit current stage
-      EmitCurrentStage();
-      // Start polling for stage changes
-      StartStagePolling();
-    } else {
-      std::string error_msg = "Failed to connect (error code: " + std::to_string(ret) + ")";
-      DEBUG_LOG_FMT("HandleMethodCall: connect - ERROR: %s", error_msg.c_str());
-      result->Error("ConnectionFailed", error_msg);
-    }
+    std::string cfg = config;
+    std::string usr = username;
+    std::string pwd = password;
+    std::thread([cfg, usr, pwd]() {
+        openvpn_connect(
+            cfg.c_str(),
+            usr.empty() ? nullptr : usr.c_str(),
+            pwd.empty() ? nullptr : pwd.c_str()
+        );
+    }).detach();
   } else if (method == "disconnect") {
-    // Stop polling before disconnecting
-    StopStagePolling();
-    int ret = openvpn_disconnect();
-    if (ret == 0) {
-      result->Success(nullptr);
-      // Emit a disconnection event
-      if (event_sink_) {
-        event_sink_->Success(EncodableValue("disconnected"));
-        last_emitted_stage_ = "disconnected";
-      }
-    } else {
-      std::string error_msg = "Failed to disconnect (error code: " + std::to_string(ret) + ")";
-      result->Error("DisconnectFailed", error_msg);
+    // Return immediately so the UI thread is never blocked.
+    result->Success(nullptr);
+
+    // Emit "disconnecting" right away so the UI can update.
+    if (event_sink_) {
+      event_sink_->Success(EncodableValue("disconnecting"));
+      last_emitted_stage_ = "disconnecting";
     }
+
+    // Ensure polling is running to detect the final "disconnected" stage
+    // set by the Rust side once cleanup is done.
+    StartStagePolling();
+
+    std::thread([]() {
+        openvpn_disconnect();
+    }).detach();
   } else if (method == "stage") {
     DEBUG_LOG("HandleMethodCall: stage called");
     char* stage = openvpn_get_stage();
