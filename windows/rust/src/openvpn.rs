@@ -150,10 +150,10 @@ impl OpenVpnManager {
             }
         }
         
-        // Wait a bit more for Windows to release the TAP adapter
-        debug_log_to_file("[DEBUG] Waiting for TAP adapter to be released...");
+        // Wait a bit more for Windows to release the previous tunnel adapter instance.
+        debug_log_to_file("[DEBUG] Waiting for tunnel adapter to be released...");
         tokio::time::sleep(Duration::from_millis(3000)).await;
-        debug_log_to_file("[DEBUG] TAP adapter release wait completed");
+        debug_log_to_file("[DEBUG] Tunnel adapter release wait completed");
 
         // Create a temporary file for the configuration
         // Create in the system temporary directory
@@ -226,6 +226,10 @@ impl OpenVpnManager {
         // Add --verb 4 for verbose logging
         cmd.arg("--verb").arg("4");
         debug_log_to_file("[DEBUG] Command arg: --verb 4");
+
+        // Force OpenVPN to use Wintun on Windows to avoid TAP installer issues.
+        cmd.arg("--windows-driver").arg("wintun");
+        debug_log_to_file("[DEBUG] Command arg: --windows-driver wintun");
         
         // Add --status option to get statistics
         // OpenVPN will write statistics to a file every 2 seconds
@@ -478,10 +482,10 @@ impl OpenVpnManager {
             debug_log_to_file("[DEBUG] No tracked OpenVPN process to disconnect");
         }
         
-        // Wait for Windows to release the TAP adapter
-        debug_log_to_file("[DEBUG] Waiting for TAP adapter to be released...");
+        // Wait for Windows to release the previous tunnel adapter instance.
+        debug_log_to_file("[DEBUG] Waiting for tunnel adapter to be released...");
         tokio::time::sleep(Duration::from_millis(1500)).await;
-        debug_log_to_file("[DEBUG] TAP adapter release wait completed");
+        debug_log_to_file("[DEBUG] Tunnel adapter release wait completed");
 
         // Clean up temporary files
         {
@@ -570,15 +574,13 @@ fn parse_stage_from_output(line: &str) -> Option<String> {
     } else if line_lower.contains("preserving previous tun/tap instance") {
         // This line can appear during normal adapter reuse.
         None
-    } else if (line_lower.contains("tap-windows") || line_lower.contains("tun/tap"))
-        && (line_lower.contains("createfile failed on tap-windows6 device")
-            || line_lower.contains("all tap-windows6 adapters on this system are currently in use or disabled")
-            || line_lower.contains("all tap-windows6 adapters on this system are currently in use")
+    } else if (line_lower.contains("wintun") || line_lower.contains("tun/tap"))
+        && (line_lower.contains("cannot create wintun adapter")
+            || line_lower.contains("wintun.dll")
             || line_lower.contains("cannot allocate tun/tap")
             || line_lower.contains("error_gen_failure")) {
-        // Specific TAP/TUN errors - these are critical
-        // Note: "tap-windows6 device [name] opened" is NOT an error, it's a success message
-        debug_log_to_file(&format!("[DEBUG] parse_stage: TAP/TUN error detected: {} -> 'error'", line));
+        // Specific Wintun/TUN errors - these are critical.
+        debug_log_to_file(&format!("[DEBUG] parse_stage: Wintun/TUN error detected: {} -> 'error'", line));
         Some("error".to_string())
     } else if line_lower.contains("error") || line_lower.contains("failed") {
         debug_log_to_file("[DEBUG] parse_stage: Matched 'error/failed' -> 'error'");
