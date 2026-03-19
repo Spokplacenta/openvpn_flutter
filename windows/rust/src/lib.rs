@@ -7,7 +7,7 @@ use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int};
 use std::ptr;
 use std::io::Write;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use tokio::runtime::Runtime;
 
@@ -174,37 +174,41 @@ pub unsafe extern "C" fn openvpn_connect(
 
     // Get the global manager
     debug_log!("[DEBUG] openvpn_connect: Getting global manager");
-    let manager_arc = match manager::get_manager() {
-        Ok(m) => {
-            debug_log!("[DEBUG] openvpn_connect: Manager retrieved");
-            m
-        },
-        Err(e) => {
-            debug_log!("[DEBUG] openvpn_connect: ERROR - Manager not initialized: {:?}", e);
-            return -5; // Manager not initialized
-        }
-    };
-
-    debug_log!("[DEBUG] openvpn_connect: Locking manager");
-    let manager_guard = manager_arc.lock().unwrap();
-    if let Some(ref manager) = *manager_guard {
-        debug_log!("[DEBUG] openvpn_connect: Manager found, using global Tokio runtime");
-        let rt = get_runtime();
-
-        debug_log!("[DEBUG] openvpn_connect: Calling manager.connect()");
-        match rt.block_on(manager.connect(config_str, username_str, password_str)) {
-            Ok(_) => {
-                debug_log!("[DEBUG] openvpn_connect: SUCCESS");
-                0
+    let manager = {
+        let manager_arc = match manager::get_manager() {
+            Ok(m) => {
+                debug_log!("[DEBUG] openvpn_connect: Manager retrieved");
+                m
             },
             Err(e) => {
-                debug_log!("[DEBUG] openvpn_connect: ERROR - Connection failed: {:?}", e);
-                -7 // Connection error
+                debug_log!("[DEBUG] openvpn_connect: ERROR - Manager not initialized: {:?}", e);
+                return -5;
+            }
+        };
+        let guard = manager_arc.lock().unwrap();
+        match guard.as_ref() {
+            Some(m) => Arc::clone(m),
+            None => {
+                debug_log!("[DEBUG] openvpn_connect: ERROR - Manager is None");
+                return -6;
             }
         }
-    } else {
-        debug_log!("[DEBUG] openvpn_connect: ERROR - Manager is None");
-        -6 // Manager is None
+        // guard dropped here – outer lock released immediately
+    };
+
+    debug_log!("[DEBUG] openvpn_connect: Manager acquired, using global Tokio runtime");
+    let rt = get_runtime();
+
+    debug_log!("[DEBUG] openvpn_connect: Calling manager.connect()");
+    match rt.block_on(manager.connect(config_str, username_str, password_str)) {
+        Ok(_) => {
+            debug_log!("[DEBUG] openvpn_connect: SUCCESS");
+            0
+        },
+        Err(e) => {
+            debug_log!("[DEBUG] openvpn_connect: ERROR - Connection failed: {:?}", e);
+            -7
+        }
     }
 }
 
@@ -214,26 +218,23 @@ pub unsafe extern "C" fn openvpn_connect(
 /// This function is unsafe because it manipulates C pointers
 #[no_mangle]
 pub unsafe extern "C" fn openvpn_disconnect() -> c_int {
-    // Get the global manager
-    let manager_arc = match manager::get_manager() {
-        Ok(m) => m,
-        Err(_) => return -1, // Manager not initialized
+    let manager = {
+        let manager_arc = match manager::get_manager() {
+            Ok(m) => m,
+            Err(_) => return -1,
+        };
+        let guard = manager_arc.lock().unwrap();
+        match guard.as_ref() {
+            Some(m) => Arc::clone(m),
+            None => return -1,
+        }
+        // guard dropped here – outer lock released immediately
     };
 
-    let manager_guard = manager_arc.lock().unwrap();
-    if let Some(ref manager) = *manager_guard {
-        // Create a Tokio runtime to execute the async function
-        let rt = match tokio::runtime::Runtime::new() {
-            Ok(runtime) => runtime,
-            Err(_) => return -2, // Runtime creation error
-        };
-
-        match rt.block_on(manager.disconnect()) {
-            Ok(_) => 0,
-            Err(_) => -3, // Disconnection error
-        }
-    } else {
-        -1 // Manager not initialized
+    let rt = get_runtime();
+    match rt.block_on(manager.disconnect()) {
+        Ok(_) => 0,
+        Err(_) => -3,
     }
 }
 
@@ -246,34 +247,36 @@ pub unsafe extern "C" fn openvpn_disconnect() -> c_int {
 #[no_mangle]
 pub unsafe extern "C" fn openvpn_get_stage() -> *mut c_char {
     debug_log!("[DEBUG] openvpn_get_stage() called");
-    // Get the global manager
-    let manager_arc = match manager::get_manager() {
-        Ok(m) => m,
-        Err(_) => {
-            debug_log!("[DEBUG] openvpn_get_stage: Manager not initialized, returning 'disconnected'");
-            // If manager is not initialized, return "disconnected"
-            return CString::new("disconnected").unwrap().into_raw();
+    let manager = {
+        let manager_arc = match manager::get_manager() {
+            Ok(m) => m,
+            Err(_) => {
+                debug_log!("[DEBUG] openvpn_get_stage: Manager not initialized, returning 'disconnected'");
+                return CString::new("disconnected").unwrap().into_raw();
+            }
+        };
+        let guard = manager_arc.lock().unwrap();
+        match guard.as_ref() {
+            Some(m) => Arc::clone(m),
+            None => {
+                debug_log!("[DEBUG] openvpn_get_stage: Manager is None, returning 'disconnected'");
+                return CString::new("disconnected").unwrap().into_raw();
+            }
         }
     };
 
-    let manager_guard = manager_arc.lock().unwrap();
-    if let Some(ref manager) = *manager_guard {
-        match manager.get_stage() {
-            Ok(stage) => {
-                debug_log!("[DEBUG] openvpn_get_stage: Returning stage '{}'", stage);
-                CString::new(stage).unwrap_or_else(|_| {
-                    debug_log!("[DEBUG] openvpn_get_stage: ERROR creating CString, returning 'disconnected'");
-                    CString::new("disconnected").unwrap()
-                }).into_raw()
-            },
-            Err(e) => {
-                debug_log!("[DEBUG] openvpn_get_stage: ERROR getting stage: {:?}, returning 'disconnected'", e);
-                CString::new("disconnected").unwrap().into_raw()
-            }
+    match manager.get_stage() {
+        Ok(stage) => {
+            debug_log!("[DEBUG] openvpn_get_stage: Returning stage '{}'", stage);
+            CString::new(stage).unwrap_or_else(|_| {
+                debug_log!("[DEBUG] openvpn_get_stage: ERROR creating CString, returning 'disconnected'");
+                CString::new("disconnected").unwrap()
+            }).into_raw()
+        },
+        Err(e) => {
+            debug_log!("[DEBUG] openvpn_get_stage: ERROR getting stage: {:?}, returning 'disconnected'", e);
+            CString::new("disconnected").unwrap().into_raw()
         }
-    } else {
-        debug_log!("[DEBUG] openvpn_get_stage: Manager is None, returning 'disconnected'");
-        CString::new("disconnected").unwrap().into_raw()
     }
 }
 
@@ -285,75 +288,72 @@ pub unsafe extern "C" fn openvpn_get_stage() -> *mut c_char {
 /// This function is unsafe because it manipulates C pointers
 #[no_mangle]
 pub unsafe extern "C" fn openvpn_get_status() -> *mut VpnState {
-    // Get the global manager
-    let manager_arc = match manager::get_manager() {
-        Ok(m) => m,
-        Err(_) => {
-            // If manager is not initialized, return an empty state
-            let state = Box::new(VpnState::default());
-            return Box::into_raw(state);
+    let manager = {
+        let manager_arc = match manager::get_manager() {
+            Ok(m) => m,
+            Err(_) => {
+                let state = Box::new(VpnState::default());
+                return Box::into_raw(state);
+            }
+        };
+        let guard = manager_arc.lock().unwrap();
+        match guard.as_ref() {
+            Some(m) => Arc::clone(m),
+            None => {
+                let state = Box::new(VpnState::default());
+                return Box::into_raw(state);
+            }
         }
     };
 
-    let manager_guard = manager_arc.lock().unwrap();
-    if let Some(ref manager) = *manager_guard {
-        match manager.get_stats() {
-            Ok(stats) => {
-                // Convert VpnStats to VpnState
-                let stage_str = manager.get_stage().unwrap_or_else(|_| "disconnected".to_string());
-                let stage_cstr = CString::new(stage_str).unwrap_or_else(|_| {
-                    CString::new("disconnected").unwrap()
-                });
-                
-                let connected_on_str = if let Some(connected_on) = stats.connected_on {
-                    // Convert SystemTime to ISO8601 (RFC3339)
-                    match connected_on.duration_since(std::time::UNIX_EPOCH) {
-                        Ok(duration) => {
-                            let datetime = chrono::DateTime::<chrono::Utc>::from_timestamp(
-                                duration.as_secs() as i64,
-                                duration.subsec_nanos(),
-                            );
-                            datetime.map(|dt| dt.to_rfc3339()).unwrap_or_default()
-                        },
-                        Err(_) => String::new(),
-                    }
-                } else {
-                    String::new()
-                };
-                
-                let connected_on_cstr = if connected_on_str.is_empty() {
-                    ptr::null()
-                } else {
-                    match CString::new(connected_on_str) {
-                        Ok(s) => s.into_raw() as *const c_char,
-                        Err(_) => ptr::null(),
-                    }
-                };
-                
-                // Convert stage_cstr to raw pointer for storage
-                let stage_ptr = stage_cstr.into_raw();
-                
-                let state = Box::new(VpnState {
-                    stage: stage_ptr as *const c_char,
-                    connected_on: connected_on_cstr,
-                    byte_in: stats.byte_in,
-                    byte_out: stats.byte_out,
-                    packets_in: stats.packets_in,
-                    packets_out: stats.packets_out,
-                });
-                
-                Box::into_raw(state)
-            },
-            Err(_) => {
-                // On error, return default state
-                let state = Box::new(VpnState::default());
-                Box::into_raw(state)
-            }
+    match manager.get_stats() {
+        Ok(stats) => {
+            let stage_str = manager.get_stage().unwrap_or_else(|_| "disconnected".to_string());
+            let stage_cstr = CString::new(stage_str).unwrap_or_else(|_| {
+                CString::new("disconnected").unwrap()
+            });
+
+            let connected_on_str = if let Some(connected_on) = stats.connected_on {
+                match connected_on.duration_since(std::time::UNIX_EPOCH) {
+                    Ok(duration) => {
+                        let datetime = chrono::DateTime::<chrono::Utc>::from_timestamp(
+                            duration.as_secs() as i64,
+                            duration.subsec_nanos(),
+                        );
+                        datetime.map(|dt| dt.to_rfc3339()).unwrap_or_default()
+                    },
+                    Err(_) => String::new(),
+                }
+            } else {
+                String::new()
+            };
+
+            let connected_on_cstr = if connected_on_str.is_empty() {
+                ptr::null()
+            } else {
+                match CString::new(connected_on_str) {
+                    Ok(s) => s.into_raw() as *const c_char,
+                    Err(_) => ptr::null(),
+                }
+            };
+
+            let stage_ptr = stage_cstr.into_raw();
+
+            let state = Box::new(VpnState {
+                stage: stage_ptr as *const c_char,
+                connected_on: connected_on_cstr,
+                byte_in: stats.byte_in,
+                byte_out: stats.byte_out,
+                packets_in: stats.packets_in,
+                packets_out: stats.packets_out,
+            });
+
+            Box::into_raw(state)
+        },
+        Err(_) => {
+            let state = Box::new(VpnState::default());
+            Box::into_raw(state)
         }
-    } else {
-        // Manager not initialized
-        let state = Box::new(VpnState::default());
-        Box::into_raw(state)
     }
 }
 
