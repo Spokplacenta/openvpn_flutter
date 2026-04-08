@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import 'model/vpn_status.dart';
 import 'windows_binary_manager.dart';
 import 'windows_wintun_manager.dart';
+import 'windows_service_manager.dart';
 
 ///Stages of vpn connections
 enum VPNStage {
@@ -102,17 +103,23 @@ class OpenVPN {
           "These values are required for ios.");
     }
 
-    // For Windows, ensure the binary and Wintun runtime are available
+    // For Windows, ensure the binary, Wintun runtime and service are available
     String? binaryPath;
     if (Platform.isWindows) {
       try {
-        // Ensure OpenVPN binary is available.
         binaryPath = await WindowsBinaryManager.ensureBinary();
-        // Then ensure Wintun runtime is deployed next to the binary.
         await WindowsWintunManager.ensureWintunDeployed(
           onProgress: (progress) {
             debugPrint(
               '[OpenVPN] Wintun deploy progress: ${(progress * 100).toStringAsFixed(1)}%',
+            );
+          },
+        );
+        // Deploy & register the Interactive Service if not already present.
+        await WindowsServiceManager.ensureServiceReady(
+          onProgress: (progress) {
+            debugPrint(
+              '[OpenVPN] Service setup progress: ${(progress * 100).toStringAsFixed(1)}%',
             );
           },
         );
@@ -292,6 +299,22 @@ class OpenVPN {
     return _channelControl
         .invokeMethod("request_permission")
         .then((value) => value ?? false);
+  }
+
+  /// (Windows only) Check if the OpenVPN Interactive Service is available.
+  static Future<bool> isServiceAvailable() async {
+    if (!Platform.isWindows) return false;
+    final result = await _channelControl.invokeMethod("is_service_available");
+    return result == true;
+  }
+
+  /// (Windows only) Set the launch mode for subsequent connections.
+  /// 0 = Auto, 1 = Service, 2 = Direct, 3 = UAC.
+  static Future<bool> setLaunchMode(int mode) async {
+    if (!Platform.isWindows) return false;
+    final result = await _channelControl
+        .invokeMethod("set_launch_mode", {"mode": mode});
+    return result == true;
   }
 
   ///Sometimes config script has too many Remotes, it cause ANR in several devices,

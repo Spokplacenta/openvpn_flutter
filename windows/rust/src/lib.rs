@@ -14,10 +14,14 @@ use tokio::runtime::Runtime;
 mod openvpn;
 mod error;
 mod manager;
+mod management;
+#[cfg(target_os = "windows")]
+mod service_client;
 
 pub use openvpn::{OpenVpnManager, VpnStats};
 pub use error::*;
 pub use manager::*;
+pub use management::{ManagementClient, find_free_port, generate_mgmt_password};
 
 // Set to true to enable debug logging
 const ENABLE_DEBUG_LOGS: bool = false;
@@ -369,24 +373,59 @@ pub unsafe extern "C" fn openvpn_free_string(ptr: *mut c_char) {
 }
 
 /// Frees a VpnState structure allocated by the library
-/// 
+///
 /// # Safety
 /// This function is unsafe because it manipulates C pointers
 #[no_mangle]
 pub unsafe extern "C" fn openvpn_free_state(ptr: *mut VpnState) {
     if !ptr.is_null() {
         let state = Box::from_raw(ptr);
-        
-        // Free C strings if they are not null
+
         if !state.stage.is_null() {
-            // Free the stage string
             let _ = CString::from_raw(state.stage as *mut c_char);
         }
-        
+
         if !state.connected_on.is_null() {
-            // Free the connected_on string
             let _ = CString::from_raw(state.connected_on as *mut c_char);
         }
     }
+}
+
+/// Check whether the OpenVPN Interactive Service named pipe is available.
+/// Returns 1 if the service pipe can be opened, 0 otherwise.
+#[no_mangle]
+pub extern "C" fn openvpn_is_service_available() -> c_int {
+    let manager = {
+        let manager_arc = match manager::get_manager() {
+            Ok(m) => m,
+            Err(_) => return 0,
+        };
+        let guard = manager_arc.lock().unwrap();
+        match guard.as_ref() {
+            Some(m) => Arc::clone(m),
+            None => return 0,
+        }
+    };
+    if manager.is_service_available() { 1 } else { 0 }
+}
+
+/// Set the launch mode for subsequent connections.
+/// 0 = Auto, 1 = Service, 2 = Direct, 3 = UAC.
+/// Returns 0 on success.
+#[no_mangle]
+pub extern "C" fn openvpn_set_launch_mode(mode: c_int) -> c_int {
+    let manager = {
+        let manager_arc = match manager::get_manager() {
+            Ok(m) => m,
+            Err(_) => return -1,
+        };
+        let guard = manager_arc.lock().unwrap();
+        match guard.as_ref() {
+            Some(m) => Arc::clone(m),
+            None => return -1,
+        }
+    };
+    manager.set_launch_mode(openvpn::LaunchMode::from(mode as i32));
+    0
 }
 

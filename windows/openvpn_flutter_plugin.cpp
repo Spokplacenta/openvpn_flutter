@@ -56,6 +56,8 @@ extern "C" {
     VpnState* openvpn_get_status();
     void openvpn_free_string(char* ptr);
     void openvpn_free_state(VpnState* ptr);
+    int openvpn_is_service_available();
+    int openvpn_set_launch_mode(int mode);
 }
 
 namespace flutter {
@@ -344,6 +346,23 @@ void OpenvpnFlutterPlugin::HandleMethodCall(
       std::string status_json = "{\"connected_on\":null,\"byte_in\":\"0\",\"byte_out\":\"0\",\"packets_in\":\"0\",\"packets_out\":\"0\"}";
       result->Success(EncodableValue(status_json));
     }
+  } else if (method == "is_service_available") {
+    int available = openvpn_is_service_available();
+    result->Success(EncodableValue(available == 1));
+  } else if (method == "set_launch_mode") {
+    const auto* args = std::get_if<EncodableMap>(method_call.arguments());
+    int mode = 0;
+    if (args) {
+      auto it = args->find(EncodableValue("mode"));
+      if (it != args->end()) {
+        const auto* mode_val = std::get_if<int32_t>(&it->second);
+        if (mode_val) {
+          mode = *mode_val;
+        }
+      }
+    }
+    int ret = openvpn_set_launch_mode(mode);
+    result->Success(EncodableValue(ret == 0));
   } else {
     result->NotImplemented();
   }

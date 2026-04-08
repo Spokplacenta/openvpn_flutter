@@ -8,20 +8,17 @@ name = "openvpn_flutter_rust"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-# Pour la gestion des processus (Runtime + I/O + process)
-tokio = { version = "1.35", features = ["rt-multi-thread", "process", "io-util", "sync", "time"] }
-# Pour la gestion des fichiers et chemins
-# std::fs et std::path sont suffisants, mais on peut ajouter des helpers
-# Pour la gestion des erreurs
+tokio = { version = "1.35", features = ["rt-multi-thread", "process", "io-util", "sync", "time", "net"] }
 anyhow = "1.0"
 thiserror = "1.0"
-# Pour la sérialisation JSON si nécessaire
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-# Pour les fichiers temporaires
 tempfile = "3.8"
-# Pour la conversion de dates/timestamps
 chrono = "0.4"
+rand = "0.8"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.52", features = ["Win32_Foundation", "Win32_UI_Shell", "Win32_Storage_FileSystem", "Win32_System_Threading", "Win32_Security", "Win32_System_Pipes", "Win32_System_IO", "Win32_System_Services"] }
 
 [profile.release]
 opt-level = 3
