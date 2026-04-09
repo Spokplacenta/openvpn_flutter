@@ -28,6 +28,15 @@ set(RUST_LIB_NAME "openvpn_flutter_rust")
 # By default, prefer prebuilt Rust artifacts so Flutter consumers
 # do not need a local Rust toolchain for standard Windows builds.
 option(OPENVPN_FLUTTER_USE_PREBUILT_RUST "Use prebuilt Rust artifacts if available" ON)
+# When cargo is on PATH, always compile from source so the DLL matches the current
+# Rust sources (avoids LNK2019 when prebuilt/*.dll predates new #[no_mangle] exports).
+option(OPENVPN_FLUTTER_FORCE_PREBUILT "Use prebuilt Rust even when cargo is available" OFF)
+
+find_program(CARGO_EXECUTABLE cargo)
+if(CARGO_EXECUTABLE AND NOT OPENVPN_FLUTTER_FORCE_PREBUILT)
+  set(OPENVPN_FLUTTER_USE_PREBUILT_RUST OFF CACHE BOOL "" FORCE)
+  message(STATUS "openvpn_flutter: cargo found (${CARGO_EXECUTABLE}); building Rust from source. Set OPENVPN_FLUTTER_FORCE_PREBUILT=ON to use prebuilt DLLs.")
+endif()
 
 # Determine build mode (debug/release)
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
