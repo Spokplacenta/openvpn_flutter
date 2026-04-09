@@ -17,12 +17,8 @@ mod platform {
     use super::*;
     use std::io::{Read, Write};
     use std::os::windows::io::FromRawHandle;
-    use windows_sys::Win32::Foundation::{
-        CloseHandle, GENERIC_READ, GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE,
-    };
-    use windows_sys::Win32::Storage::FileSystem::{
-        CreateFileW, FILE_FLAG_OVERLAPPED, OPEN_EXISTING,
-    };
+    use windows_sys::Win32::Foundation::{CloseHandle, GENERIC_READ, GENERIC_WRITE, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::Storage::FileSystem::{CreateFileW, OPEN_EXISTING};
     use windows_sys::Win32::System::Pipes::SetNamedPipeHandleState;
 
     const PIPE_NAME: &str = r"\\.\pipe\openvpn\service";
@@ -43,7 +39,7 @@ mod platform {
                 std::ptr::null(),
                 OPEN_EXISTING,
                 0,
-                std::ptr::null_mut(),
+                0,
             )
         };
         if handle == INVALID_HANDLE_VALUE {
@@ -69,7 +65,7 @@ mod platform {
                 std::ptr::null(),
                 OPEN_EXISTING,
                 0, // synchronous I/O for simplicity
-                std::ptr::null_mut(),
+                0,
             )
         };
 

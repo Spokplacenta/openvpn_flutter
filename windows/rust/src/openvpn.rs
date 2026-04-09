@@ -11,8 +11,6 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use std::fs::OpenOptions;
 use std::io::Write;
-#[cfg(target_os = "windows")]
-use std::os::windows::process::CommandExt;
 use tokio::process::{Child as TokioChild, Command as TokioCommand};
 
 use crate::error::OpenVpnError;
@@ -475,19 +473,19 @@ impl OpenVpnManager {
             let mut sei = SHELLEXECUTEINFOW {
                 cbSize: std::mem::size_of::<SHELLEXECUTEINFOW>() as u32,
                 fMask: 0x00000040, // SEE_MASK_NOCLOSEPROCESS
-                hwnd: std::ptr::null_mut(),
+                hwnd: 0,
                 lpVerb: verb.as_ptr(),
                 lpFile: binary_str.as_ptr(),
                 lpParameters: params_str.as_ptr(),
                 lpDirectory: std::ptr::null(),
                 nShow: 0, // SW_HIDE
-                hInstApp: std::ptr::null_mut(),
+                hInstApp: 0,
                 lpIDList: std::ptr::null_mut(),
                 lpClass: std::ptr::null(),
-                hkeyClass: std::ptr::null_mut(),
+                hkeyClass: 0,
                 dwHotKey: 0,
                 Anonymous: unsafe { std::mem::zeroed() },
-                hProcess: std::ptr::null_mut(),
+                hProcess: 0,
             };
 
             let ok = unsafe { ShellExecuteExW(&mut sei) };
@@ -498,7 +496,7 @@ impl OpenVpnManager {
             }
 
             // Extract PID from the process handle.
-            if !sei.hProcess.is_null() {
+            if sei.hProcess != 0 {
                 let pid =
                     unsafe { windows_sys::Win32::System::Threading::GetProcessId(sei.hProcess) };
                 debug_log_to_file(&format!("[DEBUG] Elevated PID: {}", pid));
