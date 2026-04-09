@@ -1,8 +1,8 @@
-## Artefacts Rust précompilés
+## Prebuilt Rust artifacts
 
-Ce dossier contient les bibliothèques Rust livrées avec `openvpn_flutter` pour éviter aux consommateurs d’installer Rust/rustup lors d’un build Windows classique.
+This folder contains the Rust libraries shipped with `openvpn_flutter` so consumers can build on Windows without installing Rust/rustup for standard scenarios.
 
-### Structure attendue
+### Expected structure
 
 ```
 windows/rust/prebuilt/
@@ -15,40 +15,43 @@ windows/rust/prebuilt/
         └── openvpn_flutter_rust.dll.lib
 ```
 
-> Note: certains toolchains peuvent générer `openvpn_flutter_rust.lib` au lieu de
-> `openvpn_flutter_rust.dll.lib`. Le CMake du plugin accepte les deux noms.
+> Note: some toolchains generate `openvpn_flutter_rust.lib` instead of
+> `openvpn_flutter_rust.dll.lib`. The plugin CMake accepts both names.
 
-Seuls les binaires `release` sont nécessaires pour les builds distribués (`flutter build windows`). Les binaires `debug` sont utiles pour les tests locaux sans Rust.
+Only the `release` binaries are required for distributable builds (`flutter build windows`). `debug` binaries are useful for local testing without Rust.
 
-### Générer/mettre à jour les binaires
+### Generate/update binaries
 
-1. Installer l’outilchain MSVC compatible (Visual Studio Build Tools) puis `rustup target add x86_64-pc-windows-msvc`.
-2. Depuis `windows/rust/`, exécuter :
+1. Install a compatible MSVC toolchain (Visual Studio Build Tools), then run `rustup target add x86_64-pc-windows-msvc`.
+2. From `windows/rust/`, run:
 
    ```powershell
    cargo build --target x86_64-pc-windows-msvc --release
    ```
 
-   (Ajouter `--profile dev` ou omettre `--release` pour produire les binaires `debug`.)
-3. Copier les fichiers générés depuis `windows/rust/target/x86_64-pc-windows-msvc/<profil>/` vers la structure `prebuilt/` ci-dessus.
+   (Use `--profile dev` or omit `--release` to produce `debug` binaries.)
+3. Copy generated files from `windows/rust/target/x86_64-pc-windows-msvc/<profile>/` into the `prebuilt/` structure above.
    - DLL: `openvpn_flutter_rust.dll`
-   - Import library: `openvpn_flutter_rust.dll.lib` (ou `openvpn_flutter_rust.lib`)
-4. Commiter les binaires pour qu’ils soient distribués avec la librairie (ou publier les DLL via un artefact de release et les placer ici lors du packaging).
+   - Import library: `openvpn_flutter_rust.dll.lib` (or `openvpn_flutter_rust.lib`)
+4. Commit these binaries so they are distributed with the library (or publish DLLs as release artifacts and place them here during packaging).
 
-### Validation CI
+### CI validation
 
-Le workflow GitHub Actions `windows-rust-prebuilt.yml` reconstruit les artefacts
-Windows et détecte les écarts avec les binaires versionnés dans `prebuilt/`.
-En cas d'écart, le workflow publie un artefact `prebuilt-drift.patch` pour
-inspection et mise à jour du dépôt.
+The GitHub Actions workflow `windows-rust-prebuilt.yml` rebuilds Windows artifacts and checks for drift against binaries versioned in `prebuilt/`.
+If drift is detected, the workflow publishes a `prebuilt-drift.patch` artifact for review and repository update.
 
-### Désactiver l’usage des précompilés
+### MSVC linker error (LNK2019: `openvpn_is_service_available`, `openvpn_set_launch_mode`, ...)
 
-Lorsqu’on développe sur le plugin et qu’on souhaite recompiler systématiquement le Rust, il suffit de désactiver l’option CMake :
+The `.dll` / `.lib` files in this folder must export the same `#[no_mangle]` symbols as `windows/rust/src/lib.rs`.
+If plugin C++ references a symbol missing from prebuilt artifacts (added after they were generated), **regenerate** binaries (see "Generate/update binaries") and commit them, **or** install `cargo` on the build machine: plugin `CMakeLists.txt` then prefers local compilation and ignores stale prebuilts.
+
+### Disable prebuilt usage
+
+When developing the plugin and you want to always rebuild Rust, disable the CMake option:
 
 ```powershell
 cmake -DOPENVPN_FLUTTER_USE_PREBUILT_RUST=OFF ...
 ```
 
-Dans ce mode, CMake invoquera automatiquement `cargo build` et utilisera les artefacts présents dans `windows/rust/target/`.
+In this mode, CMake automatically invokes `cargo build` and uses artifacts from `windows/rust/target/`.
 
