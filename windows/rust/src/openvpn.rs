@@ -98,6 +98,9 @@ fn classify_reason(line: &str) -> &'static str {
     let line_lower = line.to_lowercase();
     if line_lower.contains("auth_failed") || line_lower.contains("authentication failed") {
         "AUTH_FAILED"
+    } else if line_lower.contains("wintun requires system privileges")
+        || line_lower.contains("should be used with interactive service") {
+        "WINTUN_SYSTEM_PRIVILEGE_REQUIRED"
     } else if line_lower.contains("tls handshake failed") || line_lower.contains("tls error") {
         "TLS_FAILED"
     } else if line_lower.contains("cannot resolve host address") || line_lower.contains("resolve error") {
@@ -116,6 +119,21 @@ fn classify_reason(line: &str) -> &'static str {
         "FATAL"
     } else {
         "UNKNOWN"
+    }
+}
+
+async fn is_current_process_elevated() -> bool {
+    let mut cmd = TokioCommand::new("cmd");
+    cmd.args(["/C", "net session >nul 2>&1"]);
+    #[cfg(target_os = "windows")]
+    {
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+
+    match cmd.status().await {
+        Ok(status) => status.success(),
+        Err(_) => false,
     }
 }
 
@@ -290,9 +308,35 @@ impl OpenVpnManager {
         cmd.arg("--verb").arg("4");
         debug_log_to_file("[DEBUG] Command arg: --verb 4");
 
-        // Force OpenVPN to use Wintun on Windows to avoid TAP installer issues.
-        cmd.arg("--windows-driver").arg("wintun");
-        debug_log_to_file("[DEBUG] Command arg: --windows-driver wintun");
+        // Driver strategy:
+        // - if config already defines a driver, keep it untouched,
+        // - if process is not elevated, avoid forcing Wintun to prevent
+        //   "Wintun requires SYSTEM privileges" failures.
+        // - if elevated and config has no explicit driver, keep Wintun default.
+        let config_lower = config.to_lowercase();
+        let has_explicit_driver = config_lower.contains("windows-driver");
+        if !has_explicit_driver {
+            let elevated = is_current_process_elevated().await;
+            if elevated {
+                cmd.arg("--windows-driver").arg("wintun");
+                debug_log_to_file("[DEBUG] Command arg: --windows-driver wintun (elevated)");
+                diag_log_to_file(
+                    "[RUST_CONNECT] driverStrategy=wintun_default_elevated interactiveServicePath=not_forced",
+                );
+            } else {
+                cmd.arg("--windows-driver").arg("tap-windows6");
+                debug_log_to_file(
+                    "[DEBUG] Command arg: --windows-driver tap-windows6 (non-elevated fallback)",
+                );
+                diag_log_to_file(
+                    "[RUST_CONNECT] driverStrategy=tap-windows6_non_elevated_fallback interactiveServicePath=required_for_wintun",
+                );
+            }
+        } else {
+            diag_log_to_file(
+                "[RUST_CONNECT] driverStrategy=config_defined interactiveServicePath=external",
+            );
+        }
         
         // Add --status option to get statistics
         // OpenVPN will write statistics to a file every 2 seconds
