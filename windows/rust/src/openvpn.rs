@@ -3,11 +3,10 @@
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use std::fs::OpenOptions;
 use std::io::Write;
 #[cfg(target_os = "windows")]
-use std::os::windows::process::CommandExt;
 use tokio::process::{Child as TokioChild, Command as TokioCommand};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use crate::error::OpenVpnError;
@@ -73,6 +72,63 @@ fn debug_log_to_file(msg: &str) {
     eprintln!("{}", msg);
 }
 
+fn diag_log_to_file(msg: &str) {
+    if let Ok(mut file) = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(std::env::temp_dir().join("openvpn_rust_diag.log"))
+    {
+        let _ = writeln!(file, "{}", msg);
+        let _ = file.flush();
+    }
+}
+
+fn sanitize_for_log(line: &str) -> String {
+    let collapsed = line.replace('\r', " ").replace('\n', " ");
+    let trimmed = collapsed.trim();
+    const MAX_LEN: usize = 240;
+    if trimmed.len() > MAX_LEN {
+        format!("{}...", &trimmed[..MAX_LEN])
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn classify_reason(line: &str) -> &'static str {
+    let line_lower = line.to_lowercase();
+    if line_lower.contains("auth_failed") || line_lower.contains("authentication failed") {
+        "AUTH_FAILED"
+    } else if line_lower.contains("tls handshake failed") || line_lower.contains("tls error") {
+        "TLS_FAILED"
+    } else if line_lower.contains("cannot resolve host address") || line_lower.contains("resolve error") {
+        "DNS_RESOLVE_FAILED"
+    } else if line_lower.contains("connection timed out") {
+        "CONNECT_TIMEOUT"
+    } else if line_lower.contains("connection refused") {
+        "CONNECTION_REFUSED"
+    } else if line_lower.contains("certificate verify failed") || line_lower.contains("verify error") {
+        "CERT_VERIFY_FAILED"
+    } else if line_lower.contains("wintun") && line_lower.contains("cannot create wintun adapter") {
+        "WINTUN_CREATE_FAILED"
+    } else if line_lower.contains("network is unreachable") {
+        "NETWORK_UNREACHABLE"
+    } else if line_lower.contains("fatal") {
+        "FATAL"
+    } else {
+        "UNKNOWN"
+    }
+}
+
+fn log_stage_transition(stream: &str, from: &str, to: &str, line: &str, start: Instant) {
+    let elapsed_ms = start.elapsed().as_millis();
+    let reason_code = classify_reason(line);
+    let trigger_line = sanitize_for_log(line);
+    diag_log_to_file(&format!(
+        "[RUST_STAGE] stream={} from={} to={} elapsedMs={} reasonCode={} trigger=\"{}\"",
+        stream, from, to, elapsed_ms, reason_code, trigger_line
+    ));
+}
+
 /// VPN connection statistics
 #[derive(Clone, Default)]
 pub struct VpnStats {
@@ -131,7 +187,14 @@ impl OpenVpnManager {
         username: Option<String>,
         password: Option<String>,
     ) -> Result<(), OpenVpnError> {
+        let connect_started_at = Instant::now();
         debug_log_to_file("[DEBUG] OpenVpnManager::connect() called");
+        diag_log_to_file(&format!(
+            "[RUST_CONNECT] phase=start configBytes={} hasUsername={} hasPassword={}",
+            config.len(),
+            username.is_some(),
+            password.is_some()
+        ));
         debug_log_to_file(&format!("[DEBUG] Config length: {} bytes", config.len()));
         debug_log_to_file(&format!("[DEBUG] Username provided: {}", username.is_some()));
         debug_log_to_file(&format!("[DEBUG] Password provided: {}", password.is_some()));
@@ -275,6 +338,11 @@ impl OpenVpnManager {
         
         let pid = child.id();
         debug_log_to_file(&format!("[DEBUG] Process spawned successfully, PID: {:?}", pid));
+        diag_log_to_file(&format!(
+            "[RUST_CONNECT] phase=spawn_ok pid={:?} elapsedMs={}",
+            pid,
+            connect_started_at.elapsed().as_millis()
+        ));
 
         // Read stdout and stderr in parallel to detect stages
         debug_log_to_file("[DEBUG] Taking stdout and stderr handles");
@@ -324,6 +392,7 @@ impl OpenVpnManager {
         // Task to read stdout
         let stats_stdout = Arc::clone(&stats_arc);
         let stage_stdout = Arc::clone(&stage_arc);
+        let start_stdout = connect_started_at;
         debug_log_to_file("[DEBUG] Spawning stdout reader task");
         tokio::spawn(async move {
             debug_log_to_file("[DEBUG] stdout reader task started");
@@ -347,6 +416,7 @@ impl OpenVpnManager {
                             // Only log if the stage actually changed
                             if old_stage != new_stage {
                                 debug_log_to_file(&format!("[DEBUG] stdout: Stage updated from '{}' to '{}'", old_stage, new_stage));
+                                log_stage_transition("stdout", &old_stage, &new_stage, &line, start_stdout);
                                 *current = new_stage.clone();
                                 
                                 // If connected, update the timestamp
@@ -392,6 +462,7 @@ impl OpenVpnManager {
         // Task to read stderr
         let stats_stderr = Arc::clone(&stats_arc);
         let stage_stderr = Arc::clone(&stage_arc);
+        let start_stderr = connect_started_at;
         debug_log_to_file("[DEBUG] Spawning stderr reader task");
         tokio::spawn(async move {
             debug_log_to_file("[DEBUG] stderr reader task started");
@@ -411,6 +482,9 @@ impl OpenVpnManager {
                             debug_log_to_file(&format!("[DEBUG] stderr: Stage detected: {}", new_stage));
                             let mut current = stage_stderr.lock().unwrap();
                             let old_stage = current.clone();
+                            if old_stage != new_stage {
+                                log_stage_transition("stderr", &old_stage, &new_stage, &line, start_stderr);
+                            }
                             *current = new_stage.clone();
                             debug_log_to_file(&format!("[DEBUG] stderr: Stage updated from '{}' to '{}'", old_stage, new_stage));
                             
@@ -449,6 +523,10 @@ impl OpenVpnManager {
             *process = Some(child);
         }
         debug_log_to_file("[DEBUG] Process stored, connect() returning Ok");
+        diag_log_to_file(&format!(
+            "[RUST_CONNECT] phase=return_ok elapsedMs={}",
+            connect_started_at.elapsed().as_millis()
+        ));
 
         Ok(())
     }

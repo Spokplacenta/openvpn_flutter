@@ -11,6 +11,7 @@
 #include <thread>
 #include <atomic>
 #include <chrono>
+#include <mutex>
 
 namespace flutter {
 
@@ -32,11 +33,13 @@ class OpenvpnFlutterPlugin : public Plugin {
   void StartStagePolling();  // Start polling for stage changes
   void StopStagePolling();   // Stop polling for stage changes
   void StagePollingThread(); // Thread function for polling
+  void EmitStageIfChanged(const std::string& stage, const char* source);
 
   std::unique_ptr<MethodChannel<EncodableValue>> method_channel_;
   std::unique_ptr<EventChannel<EncodableValue>> event_channel_;
   std::unique_ptr<EventSink<EncodableValue>> event_sink_;
   std::string last_emitted_stage_;  // Last emitted stage to avoid duplicates
+  std::mutex stage_mutex_;
   std::thread stage_polling_thread_;  // Thread for polling stage changes
   std::atomic<bool> stop_polling_;    // Flag to stop polling
 };

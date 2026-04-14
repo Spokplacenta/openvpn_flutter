@@ -75,6 +75,17 @@ std::optional<std::string> GetEnvironmentVariable(const char* name) {
   return environment_value;
 }
 
+void WriteDiagLog(const std::string& msg) {
+  const auto temp_dir = GetEnvironmentVariable("TEMP");
+  if (!temp_dir.has_value()) return;
+  std::string log_path = *temp_dir + "\\openvpn_cpp_diag.log";
+  std::ofstream log_file(log_path, std::ios::app | std::ios::binary);
+  if (log_file.is_open()) {
+    log_file << msg << std::endl;
+    log_file.flush();
+  }
+}
+
 }  // namespace
 
 // static
@@ -126,6 +137,21 @@ OpenvpnFlutterPlugin::~OpenvpnFlutterPlugin() {
   StopStagePolling();
 }
 
+void OpenvpnFlutterPlugin::EmitStageIfChanged(const std::string& stage,
+                                              const char* source) {
+  std::lock_guard<std::mutex> lock(stage_mutex_);
+  if (stage == last_emitted_stage_) {
+    return;
+  }
+  const std::string previous = last_emitted_stage_;
+  last_emitted_stage_ = stage;
+  WriteDiagLog("[CPP_STAGE] source=" + std::string(source) + " from=" + previous +
+               " to=" + stage);
+  if (event_sink_) {
+    event_sink_->Success(EncodableValue(stage));
+  }
+}
+
 void OpenvpnFlutterPlugin::SetupEventChannel(
     PluginRegistrarWindows *registrar) {
   event_channel_ =
@@ -138,11 +164,13 @@ void OpenvpnFlutterPlugin::SetupEventChannel(
       [this](const EncodableValue* arguments,
              std::unique_ptr<EventSink<EncodableValue>>&& events)
           -> std::unique_ptr<StreamHandlerError<EncodableValue>> {
+        std::lock_guard<std::mutex> lock(this->stage_mutex_);
         this->event_sink_ = std::move(events);
         return nullptr;
       },
       [this](const EncodableValue* arguments)
           -> std::unique_ptr<StreamHandlerError<EncodableValue>> {
+        std::lock_guard<std::mutex> lock(this->stage_mutex_);
         this->event_sink_.reset();
         return nullptr;
       });
@@ -275,10 +303,7 @@ void OpenvpnFlutterPlugin::HandleMethodCall(
     result->Success(nullptr);
 
     // Emit "disconnecting" right away so the UI can update.
-    if (event_sink_) {
-      event_sink_->Success(EncodableValue("disconnecting"));
-      last_emitted_stage_ = "disconnecting";
-    }
+    EmitStageIfChanged("disconnecting", "disconnect_method");
 
     // Ensure polling is running to detect the final "disconnected" stage
     // set by the Rust side once cleanup is done.
@@ -295,17 +320,7 @@ void OpenvpnFlutterPlugin::HandleMethodCall(
       DEBUG_LOG_FMT("HandleMethodCall: stage - got stage '%s'", stage_str.c_str());
       openvpn_free_string(stage);
       result->Success(EncodableValue(stage_str));
-      // Emit stage if different from last emitted
-      if (stage_str != last_emitted_stage_) {
-        DEBUG_LOG_FMT("HandleMethodCall: stage - emitting stage change from '%s' to '%s'", 
-                      last_emitted_stage_.c_str(), stage_str.c_str());
-        last_emitted_stage_ = stage_str;
-        if (event_sink_) {
-          event_sink_->Success(EncodableValue(last_emitted_stage_));
-        }
-      } else {
-        DEBUG_LOG("HandleMethodCall: stage - stage unchanged, not emitting");
-      }
+      EmitStageIfChanged(stage_str, "stage_method");
     } else {
       DEBUG_LOG("HandleMethodCall: stage - stage is null, returning 'disconnected'");
       result->Success(EncodableValue("disconnected"));
@@ -351,26 +366,13 @@ void OpenvpnFlutterPlugin::HandleMethodCall(
 
 void OpenvpnFlutterPlugin::EmitCurrentStage() {
   DEBUG_LOG("EmitCurrentStage() called");
-  if (!event_sink_) {
-    DEBUG_LOG("EmitCurrentStage: event_sink_ is null, returning");
-    return;
-  }
-  
   char* stage = openvpn_get_stage();
   if (stage) {
     std::string stage_str(stage);
     DEBUG_LOG_FMT("EmitCurrentStage: got stage '%s'", stage_str.c_str());
     openvpn_free_string(stage);
     
-    // Emit only if different from last emitted
-    if (stage_str != last_emitted_stage_) {
-      DEBUG_LOG_FMT("EmitCurrentStage: emitting stage change from '%s' to '%s'", 
-                    last_emitted_stage_.c_str(), stage_str.c_str());
-      last_emitted_stage_ = stage_str;
-      event_sink_->Success(EncodableValue(stage_str));
-    } else {
-      DEBUG_LOG("EmitCurrentStage: stage unchanged, not emitting");
-    }
+    EmitStageIfChanged(stage_str, "emit_current_stage");
   } else {
     DEBUG_LOG("EmitCurrentStage: stage is null");
   }
@@ -412,15 +414,9 @@ void OpenvpnFlutterPlugin::StagePollingThread() {
       std::string stage_str(stage);
       openvpn_free_string(stage);
       
-      // Emit if different from last emitted
-      if (stage_str != last_emitted_stage_) {
-        DEBUG_LOG_FMT("StagePollingThread: stage changed from '%s' to '%s'", 
-                      last_emitted_stage_.c_str(), stage_str.c_str());
-        last_emitted_stage_ = stage_str;
-        if (event_sink_) {
-          event_sink_->Success(EncodableValue(stage_str));
-        }
-      }
+      // Never emit from this worker thread: Flutter platform channels must be
+      // invoked on the platform thread. Windows Dart side now polls `stage()`.
+      WriteDiagLog("[CPP_STAGE] source=stage_polling_thread observed=" + stage_str);
     }
   }
   DEBUG_LOG("StagePollingThread: ended");

@@ -57,6 +57,7 @@ class OpenVPN {
   ///
   ///I know it was bad practice, but this is the only way to avoid android status duration having long delay
   Timer? _vpnStatusTimer;
+  Timer? _windowsStageTimer;
 
   ///To indicate the engine already initialize
   bool initialized = false;
@@ -188,6 +189,8 @@ class OpenVPN {
   void disconnect() {
     _tempDateTime = null;
     _channelControl.invokeMethod("disconnect");
+    _windowsStageTimer?.cancel();
+    _windowsStageTimer = null;
     if (_vpnStatusTimer?.isActive ?? false) {
       _vpnStatusTimer?.cancel();
       _vpnStatusTimer = null;
@@ -348,6 +351,24 @@ class OpenVPN {
 
   ///Initialize listener, called when you start connection and stoped while
   void _initializeListener() {
+    if (Platform.isWindows) {
+      _windowsStageTimer?.cancel();
+      _windowsStageTimer =
+          Timer.periodic(const Duration(milliseconds: 500), (timer) async {
+        final vpnStage = await stage();
+        if (vpnStage != _lastStage) {
+          onVpnStageChanged?.call(vpnStage, vpnStage.name);
+          _lastStage = vpnStage;
+        }
+        if (vpnStage != VPNStage.disconnected) {
+          _createTimer();
+        } else {
+          _vpnStatusTimer?.cancel();
+        }
+      });
+      return;
+    }
+
     _vpnStageSnapshot().listen((event) {
       var vpnStage = _strToStage(event);
       if (vpnStage != _lastStage) {
