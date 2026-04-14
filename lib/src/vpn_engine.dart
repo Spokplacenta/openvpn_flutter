@@ -364,6 +364,7 @@ class OpenVPN {
           _createTimer();
         } else {
           _vpnStatusTimer?.cancel();
+          _vpnStatusTimer = null;
         }
       });
       return;
@@ -383,17 +384,15 @@ class OpenVPN {
         }
       } else {
         _vpnStatusTimer?.cancel();
+        _vpnStatusTimer = null;
       }
     });
   }
 
-  ///Create timer to invoke status
+  ///Create timer to invoke status (no-op if already running)
   void _createTimer() {
-    if (_vpnStatusTimer != null) {
-      _vpnStatusTimer!.cancel();
-      _vpnStatusTimer = null;
-    }
-    _vpnStatusTimer ??=
+    if (_vpnStatusTimer != null) return;
+    _vpnStatusTimer =
         Timer.periodic(const Duration(seconds: 1), (timer) async {
       onVpnStatusChanged?.call(await status());
     });

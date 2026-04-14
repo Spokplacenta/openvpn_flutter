@@ -29,6 +29,7 @@ mod win32 {
     pub const OPEN_EXISTING: DWORD = 3;
     pub const ERROR_PIPE_BUSY: DWORD = 231;
     pub const PROCESS_QUERY_LIMITED_INFORMATION: DWORD = 0x1000;
+    pub const PIPE_READMODE_MESSAGE: DWORD = 0x00000002;
 
     extern "system" {
         pub fn CreateFileW(
@@ -68,6 +69,15 @@ mod win32 {
             bInheritHandle: BOOL,
             dwProcessId: DWORD,
         ) -> HANDLE;
+
+        pub fn SetNamedPipeHandleState(
+            hNamedPipe: HANDLE,
+            lpMode: *mut DWORD,
+            lpMaxCollectionCount: *mut DWORD,
+            lpCollectDataTimeout: *mut DWORD,
+        ) -> BOOL;
+
+        pub fn Sleep(dwMilliseconds: DWORD);
     }
 }
 
@@ -112,7 +122,7 @@ pub struct ServiceResponse {
 // ---------------------------------------------------------------------------
 
 const PIPE_NAME: &str = r"\\.\pipe\openvpn\service";
-const PIPE_CONNECT_TIMEOUT_MS: u32 = 5000;
+const PIPE_CONNECT_TIMEOUT_MS: u32 = 1000;
 const PIPE_READ_BUFFER_SIZE: usize = 4096;
 
 // ---------------------------------------------------------------------------
@@ -161,54 +171,58 @@ pub fn connect_and_launch(
 
     let pipe_wide = to_wide_nul(PIPE_NAME);
 
-    let handle = unsafe {
-        let h = CreateFileW(
-            pipe_wide.as_ptr(),
-            GENERIC_READ | GENERIC_WRITE,
-            0,
-            std::ptr::null_mut(),
-            OPEN_EXISTING,
-            0,
-            std::ptr::null_mut(),
-        );
+    // Retry loop: the service pipe may be momentarily busy between clients.
+    const MAX_RETRIES: u32 = 2;
+    let mut handle: HANDLE = INVALID_HANDLE_VALUE;
 
-        if h == INVALID_HANDLE_VALUE {
-            let err = GetLastError();
-            if err == ERROR_PIPE_BUSY {
-                if WaitNamedPipeW(pipe_wide.as_ptr(), PIPE_CONNECT_TIMEOUT_MS) == 0 {
-                    return Err(ServiceIpcError::ServiceUnavailable(format!(
-                        "Pipe busy, wait timed out ({}ms)",
-                        PIPE_CONNECT_TIMEOUT_MS
-                    )));
-                }
-                let h2 = CreateFileW(
-                    pipe_wide.as_ptr(),
-                    GENERIC_READ | GENERIC_WRITE,
-                    0,
-                    std::ptr::null_mut(),
-                    OPEN_EXISTING,
-                    0,
-                    std::ptr::null_mut(),
-                );
-                if h2 == INVALID_HANDLE_VALUE {
-                    return Err(ServiceIpcError::ServiceUnavailable(format!(
-                        "CreateFileW failed after wait, error={}",
-                        GetLastError()
-                    )));
-                }
-                h2
-            } else {
-                return Err(ServiceIpcError::ServiceUnavailable(format!(
-                    "CreateFileW failed, error={}",
-                    err
-                )));
+    for attempt in 0..MAX_RETRIES {
+        handle = unsafe {
+            CreateFileW(
+                pipe_wide.as_ptr(),
+                GENERIC_READ | GENERIC_WRITE,
+                0,
+                std::ptr::null_mut(),
+                OPEN_EXISTING,
+                0,
+                std::ptr::null_mut(),
+            )
+        };
+
+        if handle != INVALID_HANDLE_VALUE {
+            break;
+        }
+
+        let err = unsafe { GetLastError() };
+        if err == ERROR_PIPE_BUSY {
+            // Wait for an instance to become available, then retry.
+            unsafe {
+                WaitNamedPipeW(pipe_wide.as_ptr(), PIPE_CONNECT_TIMEOUT_MS);
+                // Small extra sleep to let the service recycle the instance.
+                Sleep(200);
             }
         } else {
-            h
+            return Err(ServiceIpcError::ServiceUnavailable(format!(
+                "CreateFileW failed on attempt {}, error={}",
+                attempt, err
+            )));
         }
-    };
+    }
+
+    if handle == INVALID_HANDLE_VALUE {
+        return Err(ServiceIpcError::ServiceUnavailable(format!(
+            "Pipe still busy after {} retries ({}ms each)",
+            MAX_RETRIES, PIPE_CONNECT_TIMEOUT_MS
+        )));
+    }
 
     let pipe = PipeHandle(handle);
+
+    // The Interactive Service creates a MESSAGE-mode pipe; switch the client
+    // handle to MESSAGE read mode so ReadFile returns one message at a time.
+    unsafe {
+        let mut mode: DWORD = PIPE_READMODE_MESSAGE;
+        SetNamedPipeHandleState(pipe.0, &mut mode, std::ptr::null_mut(), std::ptr::null_mut());
+    }
 
     // Build startup data: 3 null-terminated UTF-16 strings concatenated.
     let mut buf = Vec::new();

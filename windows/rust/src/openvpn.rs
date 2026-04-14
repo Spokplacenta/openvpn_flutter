@@ -90,20 +90,6 @@ fn classify_reason(line: &str) -> &'static str {
     }
 }
 
-async fn is_current_process_elevated() -> bool {
-    let mut cmd = TokioCommand::new("cmd");
-    cmd.args(["/C", "net session >nul 2>&1"]);
-    #[cfg(target_os = "windows")]
-    {
-        const CREATE_NO_WINDOW: u32 = 0x08000000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
-    }
-    match cmd.status().await {
-        Ok(status) => status.success(),
-        Err(_) => false,
-    }
-}
-
 fn log_stage_transition(stream: &str, from: &str, to: &str, line: &str, start: Instant) {
     let elapsed_ms = start.elapsed().as_millis();
     let reason_code = classify_reason(line);
@@ -144,7 +130,53 @@ async fn kill_all_openvpn_processes() {
             ));
         }
     }
-    tokio::time::sleep(Duration::from_millis(1000)).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+}
+
+async fn restart_interactive_service() -> bool {
+    diag_log_to_file("[RUST_SERVICE] restarting OpenVPNServiceInteractive...");
+
+    let stop = {
+        let mut cmd = TokioCommand::new("net");
+        cmd.args(["stop", "OpenVPNServiceInteractive"]);
+        #[cfg(target_os = "windows")]
+        {
+            const CREATE_NO_WINDOW: u32 = 0x08000000;
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
+        cmd.output().await
+    };
+    if let Ok(ref out) = stop {
+        let msg = String::from_utf8_lossy(&out.stdout);
+        diag_log_to_file(&format!("[RUST_SERVICE] stop: {}", msg.trim()));
+    }
+
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let start = {
+        let mut cmd = TokioCommand::new("net");
+        cmd.args(["start", "OpenVPNServiceInteractive"]);
+        #[cfg(target_os = "windows")]
+        {
+            const CREATE_NO_WINDOW: u32 = 0x08000000;
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
+        cmd.output().await
+    };
+    let ok = match start {
+        Ok(ref out) => {
+            let msg = String::from_utf8_lossy(&out.stdout);
+            diag_log_to_file(&format!("[RUST_SERVICE] start: {}", msg.trim()));
+            out.status.success()
+        }
+        Err(ref e) => {
+            diag_log_to_file(&format!("[RUST_SERVICE] start failed: {}", e));
+            false
+        }
+    };
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    ok
 }
 
 async fn kill_process_by_pid(pid: u32) {
@@ -260,7 +292,7 @@ impl OpenVpnManager {
                 }
             }
         }
-        tokio::time::sleep(Duration::from_millis(3000)).await;
+        tokio::time::sleep(Duration::from_millis(1000)).await;
 
         // ── 2. Write temporary files (common to both paths) ─────────────
         let temp_dir = std::env::temp_dir();
@@ -307,10 +339,13 @@ impl OpenVpnManager {
         }
 
         // ── 3. Try IPC Interactive Service path ─────────────────────────
+        // Restart the service to clear any stale pipe state left by
+        // previously killed openvpn.exe processes.
+        let service_restarted = restart_interactive_service().await;
         let service_available = service_ipc::is_service_available();
         diag_log_to_file(&format!(
-            "[RUST_CONNECT] phase=service_check serviceAvailable={}",
-            service_available
+            "[RUST_CONNECT] phase=service_check serviceRestarted={} serviceAvailable={}",
+            service_restarted, service_available
         ));
 
         let mut used_service = false;
@@ -423,22 +458,15 @@ impl OpenVpnManager {
 
         cmd.arg("--verb").arg("4");
 
-        // Driver strategy for direct mode: wintun only when elevated.
+        // In direct mode, Wintun can never work (it requires SYSTEM privileges,
+        // not just admin elevation). Always use tap-windows6 unless the config
+        // explicitly specifies a driver.
         let config_lower = config.to_lowercase();
-        let has_explicit_driver = config_lower.contains("windows-driver");
-        if !has_explicit_driver {
-            let elevated = is_current_process_elevated().await;
-            if elevated {
-                cmd.arg("--windows-driver").arg("wintun");
-                diag_log_to_file(
-                    "[RUST_CONNECT] driverStrategy=wintun_default_elevated mode=direct",
-                );
-            } else {
-                cmd.arg("--windows-driver").arg("tap-windows6");
-                diag_log_to_file(
-                    "[RUST_CONNECT] driverStrategy=tap-windows6_non_elevated_fallback mode=direct",
-                );
-            }
+        if !config_lower.contains("windows-driver") {
+            cmd.arg("--windows-driver").arg("tap-windows6");
+            diag_log_to_file(
+                "[RUST_CONNECT] driverStrategy=tap-windows6_direct_mode",
+            );
         } else {
             diag_log_to_file(
                 "[RUST_CONNECT] driverStrategy=config_defined mode=direct",
