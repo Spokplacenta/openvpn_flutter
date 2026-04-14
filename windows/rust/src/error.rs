@@ -21,5 +21,11 @@ pub enum OpenVpnError {
     
     #[error("UTF-8 conversion error")]
     Utf8Error,
+
+    #[error("Service IPC failed: {0}")]
+    ServiceIpcFailed(String),
+
+    #[error("Service startup rejected (0x{code:08X}): {message}")]
+    ServiceStartupRejected { code: u32, message: String },
 }
 

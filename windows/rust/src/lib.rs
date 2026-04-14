@@ -14,6 +14,7 @@ use tokio::runtime::Runtime;
 mod openvpn;
 mod error;
 mod manager;
+mod service_ipc;
 
 pub use openvpn::{OpenVpnManager, VpnStats};
 pub use error::*;

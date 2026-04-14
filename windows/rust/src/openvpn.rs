@@ -10,52 +10,12 @@ use std::io::Write;
 use tokio::process::{Child as TokioChild, Command as TokioCommand};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use crate::error::OpenVpnError;
+use crate::service_ipc;
 
-// Helper function to kill all OpenVPN processes on Windows
-async fn kill_all_openvpn_processes() {
-    debug_log_to_file("[DEBUG] Attempting to kill all OpenVPN processes...");
-    
-    // Use taskkill to forcefully kill all openvpn.exe processes
-    let mut kill_cmd = TokioCommand::new("taskkill");
-    kill_cmd.args(&["/F", "/IM", "openvpn.exe", "/T"]);
-    #[cfg(target_os = "windows")]
-    {
-        const CREATE_NO_WINDOW: u32 = 0x08000000;
-        kill_cmd.creation_flags(CREATE_NO_WINDOW);
-    }
-    let output = kill_cmd.output().await;
-    
-    match output {
-        Ok(output) => {
-            if output.status.success() {
-                debug_log_to_file("[DEBUG] Successfully killed all OpenVPN processes");
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                if !stdout.is_empty() {
-                    debug_log_to_file(&format!("[DEBUG] taskkill output: {}", stdout));
-                }
-            } else {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                // It's OK if no processes were found
-                if stderr.contains("not found") || stderr.contains("not running") {
-                    debug_log_to_file("[DEBUG] No OpenVPN processes found to kill");
-                } else {
-                    debug_log_to_file(&format!("[DEBUG] Warning: taskkill failed: {}", stderr));
-                }
-            }
-        }
-        Err(e) => {
-            debug_log_to_file(&format!("[DEBUG] Warning: Failed to execute taskkill: {}", e));
-        }
-    }
-    
-    // Wait a bit for Windows to release resources
-    tokio::time::sleep(Duration::from_millis(1000)).await;
-}
+// ── Helpers ─────────────────────────────────────────────────────────────────
 
-// Set to true to enable debug logging
 const ENABLE_DEBUG_LOGS: bool = false;
 
-// Helper function to write debug logs to a file
 fn debug_log_to_file(msg: &str) {
     if !ENABLE_DEBUG_LOGS {
         return;
@@ -68,7 +28,6 @@ fn debug_log_to_file(msg: &str) {
         let _ = writeln!(file, "{}", msg);
         let _ = file.flush();
     }
-    // Also print to stderr (visible in debugger)
     eprintln!("{}", msg);
 }
 
@@ -99,24 +58,33 @@ fn classify_reason(line: &str) -> &'static str {
     if line_lower.contains("auth_failed") || line_lower.contains("authentication failed") {
         "AUTH_FAILED"
     } else if line_lower.contains("wintun requires system privileges")
-        || line_lower.contains("should be used with interactive service") {
+        || line_lower.contains("should be used with interactive service")
+    {
         "WINTUN_SYSTEM_PRIVILEGE_REQUIRED"
     } else if line_lower.contains("tls handshake failed") || line_lower.contains("tls error") {
         "TLS_FAILED"
-    } else if line_lower.contains("cannot resolve host address") || line_lower.contains("resolve error") {
+    } else if line_lower.contains("cannot resolve host address")
+        || line_lower.contains("resolve error")
+    {
         "DNS_RESOLVE_FAILED"
     } else if line_lower.contains("connection timed out") {
         "CONNECT_TIMEOUT"
     } else if line_lower.contains("connection refused") {
         "CONNECTION_REFUSED"
-    } else if line_lower.contains("certificate verify failed") || line_lower.contains("verify error") {
+    } else if line_lower.contains("certificate verify failed")
+        || line_lower.contains("verify error")
+    {
         "CERT_VERIFY_FAILED"
-    } else if line_lower.contains("wintun") && line_lower.contains("cannot create wintun adapter") {
+    } else if line_lower.contains("wintun")
+        && line_lower.contains("cannot create wintun adapter")
+    {
         "WINTUN_CREATE_FAILED"
     } else if line_lower.contains("network is unreachable") {
         "NETWORK_UNREACHABLE"
     } else if line_lower.contains("fatal") {
         "FATAL"
+    } else if line_lower.contains("service ipc") || line_lower.contains("pipe") {
+        "SERVICE_IPC_FAILED"
     } else {
         "UNKNOWN"
     }
@@ -130,7 +98,6 @@ async fn is_current_process_elevated() -> bool {
         const CREATE_NO_WINDOW: u32 = 0x08000000;
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
-
     match cmd.status().await {
         Ok(status) => status.success(),
         Err(_) => false,
@@ -147,6 +114,62 @@ fn log_stage_transition(stream: &str, from: &str, to: &str, line: &str, start: I
     ));
 }
 
+async fn kill_all_openvpn_processes() {
+    debug_log_to_file("[DEBUG] Attempting to kill all OpenVPN processes...");
+    let mut kill_cmd = TokioCommand::new("taskkill");
+    kill_cmd.args(&["/F", "/IM", "openvpn.exe", "/T"]);
+    #[cfg(target_os = "windows")]
+    {
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        kill_cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    let output = kill_cmd.output().await;
+    match output {
+        Ok(output) => {
+            if output.status.success() {
+                debug_log_to_file("[DEBUG] Successfully killed all OpenVPN processes");
+            } else {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                if stderr.contains("not found") || stderr.contains("not running") {
+                    debug_log_to_file("[DEBUG] No OpenVPN processes found to kill");
+                } else {
+                    debug_log_to_file(&format!("[DEBUG] Warning: taskkill failed: {}", stderr));
+                }
+            }
+        }
+        Err(e) => {
+            debug_log_to_file(&format!(
+                "[DEBUG] Warning: Failed to execute taskkill: {}",
+                e
+            ));
+        }
+    }
+    tokio::time::sleep(Duration::from_millis(1000)).await;
+}
+
+async fn kill_process_by_pid(pid: u32) {
+    debug_log_to_file(&format!("[DEBUG] Killing PID {}...", pid));
+    let mut cmd = TokioCommand::new("taskkill");
+    cmd.args(["/F", "/PID", &pid.to_string()]);
+    #[cfg(target_os = "windows")]
+    {
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    match cmd.output().await {
+        Ok(out) => {
+            let msg = String::from_utf8_lossy(&out.stdout);
+            debug_log_to_file(&format!("[DEBUG] taskkill PID {}: {}", pid, msg.trim()));
+        }
+        Err(e) => {
+            debug_log_to_file(&format!("[DEBUG] taskkill PID {} error: {}", pid, e));
+        }
+    }
+    tokio::time::sleep(Duration::from_millis(500)).await;
+}
+
+// ── Types ───────────────────────────────────────────────────────────────────
+
 /// VPN connection statistics
 #[derive(Clone, Default)]
 pub struct VpnStats {
@@ -157,36 +180,41 @@ pub struct VpnStats {
     pub connected_on: Option<std::time::SystemTime>,
 }
 
-/// Main OpenVPN manager
+/// Tracks how the current openvpn.exe was launched.
+enum ManagedProcess {
+    /// Launched directly via `tokio::process::Command` (stdout/stderr piped).
+    Direct(TokioChild),
+    /// Launched via the Interactive Service IPC; only the PID is known.
+    Service { pid: u32 },
+}
+
+// ── Manager ─────────────────────────────────────────────────────────────────
+
 pub struct OpenVpnManager {
     binary_path: PathBuf,
-    process: Arc<Mutex<Option<TokioChild>>>,
+    process: Arc<Mutex<Option<ManagedProcess>>>,
     current_stage: Arc<Mutex<String>>,
-    config_file: Arc<Mutex<Option<PathBuf>>>,  // Keep config file during execution
-    auth_file: Arc<Mutex<Option<PathBuf>>>,   // Keep auth file during execution
-    status_file: Arc<Mutex<Option<PathBuf>>>,  // Keep status file path for statistics
-    stats: Arc<Mutex<VpnStats>>,  // Connection statistics
+    config_file: Arc<Mutex<Option<PathBuf>>>,
+    auth_file: Arc<Mutex<Option<PathBuf>>>,
+    status_file: Arc<Mutex<Option<PathBuf>>>,
+    log_file: Arc<Mutex<Option<PathBuf>>>,
+    stats: Arc<Mutex<VpnStats>>,
 }
 
 impl OpenVpnManager {
-    /// Creates a new OpenVPN manager
     pub fn new(binary_path: String) -> Result<Self, OpenVpnError> {
-        let msg = format!("[DEBUG] OpenVpnManager::new() called with binary_path: {}", binary_path);
-        debug_log_to_file(&msg);
-        let path = PathBuf::from(binary_path.clone());
-        
+        debug_log_to_file(&format!(
+            "[DEBUG] OpenVpnManager::new() binary_path: {}",
+            binary_path
+        ));
+        let path = PathBuf::from(&binary_path);
         if !path.exists() {
-            let msg = format!("[DEBUG] ERROR: Binary not found at: {}", path.display());
-            debug_log_to_file(&msg);
-            return Err(OpenVpnError::BinaryNotFound(
-                format!("OpenVPN binary not found at: {}", path.display())
-            ));
+            return Err(OpenVpnError::BinaryNotFound(format!(
+                "OpenVPN binary not found at: {}",
+                path.display()
+            )));
         }
-
-        let msg = format!("[DEBUG] Binary exists at: {}", path.display());
-        debug_log_to_file(&msg);
         debug_log_to_file("[DEBUG] OpenVpnManager created successfully");
-
         Ok(OpenVpnManager {
             binary_path: path,
             process: Arc::new(Mutex::new(None)),
@@ -194,11 +222,13 @@ impl OpenVpnManager {
             config_file: Arc::new(Mutex::new(None)),
             auth_file: Arc::new(Mutex::new(None)),
             status_file: Arc::new(Mutex::new(None)),
+            log_file: Arc::new(Mutex::new(None)),
             stats: Arc::new(Mutex::new(VpnStats::default())),
         })
     }
 
-    /// Launches the OpenVPN process with the provided configuration
+    // ── connect ─────────────────────────────────────────────────────────
+
     pub async fn connect(
         &self,
         config: &str,
@@ -213,460 +243,490 @@ impl OpenVpnManager {
             username.is_some(),
             password.is_some()
         ));
-        debug_log_to_file(&format!("[DEBUG] Config length: {} bytes", config.len()));
-        debug_log_to_file(&format!("[DEBUG] Username provided: {}", username.is_some()));
-        debug_log_to_file(&format!("[DEBUG] Password provided: {}", password.is_some()));
-        
-        // Kill ALL OpenVPN processes (including daemons) before starting a new connection
-        debug_log_to_file("[DEBUG] Killing all OpenVPN processes before new connection");
+
+        // ── 1. Clean up any previous connection ─────────────────────────
         kill_all_openvpn_processes().await;
-        
-        // Also clean up our tracked process if any
         {
             let mut process = self.process.lock().unwrap();
-            if let Some(mut child) = process.take() {
-                debug_log_to_file("[DEBUG] Cleaning up tracked OpenVPN process");
-                let _ = child.kill().await;
-                let _ = child.wait().await;
+            if let Some(managed) = process.take() {
+                match managed {
+                    ManagedProcess::Direct(mut child) => {
+                        let _ = child.kill().await;
+                        let _ = child.wait().await;
+                    }
+                    ManagedProcess::Service { pid, .. } => {
+                        kill_process_by_pid(pid).await;
+                    }
+                }
             }
         }
-        
-        // Wait a bit more for Windows to release the previous tunnel adapter instance.
-        debug_log_to_file("[DEBUG] Waiting for tunnel adapter to be released...");
         tokio::time::sleep(Duration::from_millis(3000)).await;
-        debug_log_to_file("[DEBUG] Tunnel adapter release wait completed");
 
-        // Create a temporary file for the configuration
-        // Create in the system temporary directory
+        // ── 2. Write temporary files (common to both paths) ─────────────
         let temp_dir = std::env::temp_dir();
-        debug_log_to_file(&format!("[DEBUG] Temp directory: {}", temp_dir.display()));
-        
-        let config_file = temp_dir.join(format!("openvpn_config_{}.ovpn", 
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs()));
-        
-        debug_log_to_file(&format!("[DEBUG] Writing config file to: {}", config_file.display()));
-        std::fs::write(&config_file, config)
-            .map_err(|e| {
-                debug_log_to_file(&format!("[DEBUG] ERROR: Failed to write config file: {}", e));
-                OpenVpnError::IoError(e)
-            })?;
-        let config_size = std::fs::metadata(&config_file).map(|m| m.len()).unwrap_or(0);
-        debug_log_to_file(&format!("[DEBUG] Config file written successfully ({} bytes)", config_size));
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
 
-        // Create a temporary file for credentials if necessary
+        let config_file = temp_dir.join(format!("openvpn_config_{}.ovpn", ts));
+        std::fs::write(&config_file, config).map_err(OpenVpnError::IoError)?;
+        debug_log_to_file(&format!(
+            "[DEBUG] Config written: {}",
+            config_file.display()
+        ));
+
         let auth_file = if username.is_some() && password.is_some() {
-            let auth_content = format!(
+            let content = format!(
                 "{}\n{}",
                 username.as_ref().unwrap(),
                 password.as_ref().unwrap()
             );
-            let auth_path = temp_dir.join(format!("openvpn_auth_{}.txt",
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_secs()));
-            debug_log_to_file(&format!("[DEBUG] Writing auth file to: {}", auth_path.display()));
-            std::fs::write(&auth_path, auth_content)
-                .map_err(|e| {
-                    debug_log_to_file(&format!("[DEBUG] ERROR: Failed to write auth file: {}", e));
-                    OpenVpnError::IoError(e)
-                })?;
-            debug_log_to_file("[DEBUG] Auth file written successfully");
-            Some(auth_path)
+            let path = temp_dir.join(format!("openvpn_auth_{}.txt", ts));
+            std::fs::write(&path, content).map_err(OpenVpnError::IoError)?;
+            Some(path)
         } else {
-            debug_log_to_file("[DEBUG] No auth file needed (no username/password)");
             None
         };
-        
-        // Store file paths for later cleanup
+
+        let status_file_path = temp_dir.join(format!("openvpn_status_{}.txt", ts));
+
+        // Store common temp paths
         {
-            let mut stored_config = self.config_file.lock().unwrap();
-            *stored_config = Some(config_file.clone());
+            *self.config_file.lock().unwrap() = Some(config_file.clone());
         }
-        
-        if let Some(ref auth_path) = auth_file {
-            let mut stored_auth = self.auth_file.lock().unwrap();
-            *stored_auth = Some(auth_path.clone());
+        if let Some(ref ap) = auth_file {
+            *self.auth_file.lock().unwrap() = Some(ap.clone());
+        }
+        {
+            *self.status_file.lock().unwrap() = Some(status_file_path.clone());
+        }
+        {
+            let mut stats = self.stats.lock().unwrap();
+            stats.connected_on = Some(std::time::SystemTime::now());
         }
 
-        // Build the OpenVPN command
-        debug_log_to_file("[DEBUG] Building OpenVPN command");
-        debug_log_to_file(&format!("[DEBUG] Binary path: {}", self.binary_path.display()));
+        // ── 3. Try IPC Interactive Service path ─────────────────────────
+        let service_available = service_ipc::is_service_available();
+        diag_log_to_file(&format!(
+            "[RUST_CONNECT] phase=service_check serviceAvailable={}",
+            service_available
+        ));
+
+        let mut used_service = false;
+
+        if service_available {
+            let log_file_path = temp_dir.join(format!("openvpn_log_{}.txt", ts));
+            {
+                *self.log_file.lock().unwrap() = Some(log_file_path.clone());
+            }
+
+            // Build CLI options — always force wintun when going through the
+            // service (it runs as SYSTEM so has the required privileges).
+            let mut opts = format!("--config \"{}\"", config_file.display());
+            if let Some(ref ap) = auth_file {
+                opts.push_str(&format!(" --auth-user-pass \"{}\"", ap.display()));
+            }
+            opts.push_str(" --verb 4");
+            opts.push_str(&format!(" --status \"{}\" 2", status_file_path.display()));
+            opts.push_str(&format!(" --log \"{}\"", log_file_path.display()));
+
+            let config_lower = config.to_lowercase();
+            if !config_lower.contains("windows-driver") {
+                opts.push_str(" --windows-driver wintun");
+            }
+
+            let working_dir = temp_dir.to_string_lossy().to_string();
+
+            diag_log_to_file(&format!(
+                "[RUST_CONNECT] phase=service_ipc_attempt workingDir=\"{}\" optsLen={}",
+                working_dir,
+                opts.len()
+            ));
+
+            match service_ipc::connect_and_launch(&working_dir, &opts, "") {
+                Ok(response) => {
+                    diag_log_to_file(&format!(
+                        "[RUST_CONNECT] phase=service_ipc_ok pid={} desc=\"{}\" driverStrategy=wintun_via_service elapsedMs={}",
+                        response.pid,
+                        response.description,
+                        connect_started_at.elapsed().as_millis()
+                    ));
+
+                    {
+                        let mut process = self.process.lock().unwrap();
+                        *process = Some(ManagedProcess::Service {
+                            pid: response.pid,
+                        });
+                    }
+
+                    // Spawn log file tailer task (replaces stdout/stderr readers)
+                    self.spawn_log_tailer(
+                        log_file_path,
+                        response.pid,
+                        connect_started_at,
+                    );
+
+                    used_service = true;
+                }
+                Err(e) => {
+                    diag_log_to_file(&format!(
+                        "[RUST_CONNECT] phase=service_ipc_failed error=\"{}\" fallback=direct",
+                        e
+                    ));
+                    // Clear log_file — we won't use it in direct mode.
+                    *self.log_file.lock().unwrap() = None;
+                }
+            }
+        }
+
+        // ── 4. Fallback: direct launch ──────────────────────────────────
+        if !used_service {
+            self.connect_direct(
+                config,
+                &config_file,
+                &auth_file,
+                &status_file_path,
+                connect_started_at,
+            )
+            .await?;
+        }
+
+        // ── 5. Spawn status file reader (common) ────────────────────────
+        self.spawn_status_reader();
+
+        diag_log_to_file(&format!(
+            "[RUST_CONNECT] phase=return_ok mode={} elapsedMs={}",
+            if used_service { "service" } else { "direct" },
+            connect_started_at.elapsed().as_millis()
+        ));
+
+        Ok(())
+    }
+
+    // ── Direct launch (existing behaviour) ──────────────────────────────
+
+    async fn connect_direct(
+        &self,
+        config: &str,
+        config_file: &PathBuf,
+        auth_file: &Option<PathBuf>,
+        status_file_path: &PathBuf,
+        connect_started_at: Instant,
+    ) -> Result<(), OpenVpnError> {
         let mut cmd = TokioCommand::new(&self.binary_path);
-        cmd.arg("--config").arg(&config_file);
-        debug_log_to_file(&format!("[DEBUG] Command arg: --config {}", config_file.display()));
-        
-        if let Some(auth_path) = &auth_file {
-            cmd.arg("--auth-user-pass").arg(auth_path);
-            debug_log_to_file(&format!("[DEBUG] Command arg: --auth-user-pass {}", auth_path.display()));
-        }
-        
-        // Add --verb 4 for verbose logging
-        cmd.arg("--verb").arg("4");
-        debug_log_to_file("[DEBUG] Command arg: --verb 4");
+        cmd.arg("--config").arg(config_file);
 
-        // Driver strategy:
-        // - if config already defines a driver, keep it untouched,
-        // - if process is not elevated, avoid forcing Wintun to prevent
-        //   "Wintun requires SYSTEM privileges" failures.
-        // - if elevated and config has no explicit driver, keep Wintun default.
+        if let Some(ref auth_path) = auth_file {
+            cmd.arg("--auth-user-pass").arg(auth_path);
+        }
+
+        cmd.arg("--verb").arg("4");
+
+        // Driver strategy for direct mode: wintun only when elevated.
         let config_lower = config.to_lowercase();
         let has_explicit_driver = config_lower.contains("windows-driver");
         if !has_explicit_driver {
             let elevated = is_current_process_elevated().await;
             if elevated {
                 cmd.arg("--windows-driver").arg("wintun");
-                debug_log_to_file("[DEBUG] Command arg: --windows-driver wintun (elevated)");
                 diag_log_to_file(
-                    "[RUST_CONNECT] driverStrategy=wintun_default_elevated interactiveServicePath=not_forced",
+                    "[RUST_CONNECT] driverStrategy=wintun_default_elevated mode=direct",
                 );
             } else {
                 cmd.arg("--windows-driver").arg("tap-windows6");
-                debug_log_to_file(
-                    "[DEBUG] Command arg: --windows-driver tap-windows6 (non-elevated fallback)",
-                );
                 diag_log_to_file(
-                    "[RUST_CONNECT] driverStrategy=tap-windows6_non_elevated_fallback interactiveServicePath=required_for_wintun",
+                    "[RUST_CONNECT] driverStrategy=tap-windows6_non_elevated_fallback mode=direct",
                 );
             }
         } else {
             diag_log_to_file(
-                "[RUST_CONNECT] driverStrategy=config_defined interactiveServicePath=external",
+                "[RUST_CONNECT] driverStrategy=config_defined mode=direct",
             );
         }
-        
-        // Add --status option to get statistics
-        // OpenVPN will write statistics to a file every 2 seconds
-        let status_file = temp_dir.join(format!("openvpn_status_{}.txt",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs()));
-        cmd.arg("--status").arg(&status_file).arg("2");
-        debug_log_to_file(&format!("[DEBUG] Command arg: --status {} 2", status_file.display()));
-        
-        // Store status file path for later cleanup and reading
-        {
-            let mut stored_status = self.status_file.lock().unwrap();
-            *stored_status = Some(status_file.clone());
-        }
+
+        cmd.arg("--status").arg(status_file_path).arg("2");
 
         cmd.stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .stdin(Stdio::null());
-        
-        // Prevent OpenVPN from opening a visible console window on Windows.
+
         #[cfg(target_os = "windows")]
         {
             const CREATE_NO_WINDOW: u32 = 0x08000000;
             cmd.creation_flags(CREATE_NO_WINDOW);
         }
-        
-        debug_log_to_file("[DEBUG] Command prepared, spawning process...");
-        
-        // Log the full command for debugging
-        let cmd_str = format!("{:?}", cmd);
-        debug_log_to_file(&format!("[DEBUG] Full command: {}", cmd_str));
 
-        // Launch the process
-        let mut child = cmd.spawn()
-            .map_err(|e| {
-                debug_log_to_file(&format!("[DEBUG] ERROR: Failed to spawn OpenVPN process: {}", e));
-                OpenVpnError::ProcessExecutionFailed(
-                    format!("Failed to spawn OpenVPN process: {}", e)
-                )
-            })?;
-        
+        let mut child = cmd.spawn().map_err(|e| {
+            OpenVpnError::ProcessExecutionFailed(format!(
+                "Failed to spawn OpenVPN process: {}",
+                e
+            ))
+        })?;
+
         let pid = child.id();
-        debug_log_to_file(&format!("[DEBUG] Process spawned successfully, PID: {:?}", pid));
         diag_log_to_file(&format!(
-            "[RUST_CONNECT] phase=spawn_ok pid={:?} elapsedMs={}",
+            "[RUST_CONNECT] phase=spawn_ok pid={:?} mode=direct elapsedMs={}",
             pid,
             connect_started_at.elapsed().as_millis()
         ));
 
-        // Read stdout and stderr in parallel to detect stages
-        debug_log_to_file("[DEBUG] Taking stdout and stderr handles");
         let stdout = child.stdout.take().unwrap();
         let stderr = child.stderr.take().unwrap();
-        
-        let process_arc = Arc::clone(&self.process);
+
+        // stdout reader
+        let stage_stdout = Arc::clone(&self.current_stage);
+        let stats_stdout = Arc::clone(&self.stats);
+        let start_stdout = connect_started_at;
+        tokio::spawn(async move {
+            let reader = BufReader::new(stdout);
+            let mut lines = reader.lines();
+            loop {
+                match lines.next_line().await {
+                    Ok(Some(line)) => {
+                        if let Some(new_stage) = parse_stage_from_output(&line) {
+                            let mut current = stage_stdout.lock().unwrap();
+                            let old = current.clone();
+                            if old != new_stage {
+                                log_stage_transition(
+                                    "stdout",
+                                    &old,
+                                    &new_stage,
+                                    &line,
+                                    start_stdout,
+                                );
+                                *current = new_stage.clone();
+                                if new_stage == "connected" {
+                                    let mut stats = stats_stdout.lock().unwrap();
+                                    if stats.connected_on.is_none() {
+                                        stats.connected_on =
+                                            Some(std::time::SystemTime::now());
+                                    }
+                                }
+                            }
+                        }
+                        parse_stats_from_output(&line, &stats_stdout);
+                    }
+                    Ok(None) | Err(_) => break,
+                }
+            }
+        });
+
+        // stderr reader
+        let stage_stderr = Arc::clone(&self.current_stage);
+        let stats_stderr = Arc::clone(&self.stats);
+        let start_stderr = connect_started_at;
+        tokio::spawn(async move {
+            let reader = BufReader::new(stderr);
+            let mut lines = reader.lines();
+            loop {
+                match lines.next_line().await {
+                    Ok(Some(line)) => {
+                        debug_log_to_file(&format!("[DEBUG] stderr: {}", line));
+                        if let Some(new_stage) = parse_stage_from_output(&line) {
+                            let mut current = stage_stderr.lock().unwrap();
+                            let old = current.clone();
+                            if old != new_stage {
+                                log_stage_transition(
+                                    "stderr",
+                                    &old,
+                                    &new_stage,
+                                    &line,
+                                    start_stderr,
+                                );
+                                *current = new_stage.clone();
+                                if new_stage == "connected" {
+                                    let mut stats = stats_stderr.lock().unwrap();
+                                    if stats.connected_on.is_none() {
+                                        stats.connected_on =
+                                            Some(std::time::SystemTime::now());
+                                    }
+                                }
+                            }
+                        }
+                        parse_stats_from_output(&line, &stats_stderr);
+                    }
+                    Ok(None) | Err(_) => break,
+                }
+            }
+        });
+
+        // Store the child handle
+        {
+            let mut process = self.process.lock().unwrap();
+            *process = Some(ManagedProcess::Direct(child));
+        }
+
+        Ok(())
+    }
+
+    // ── Log file tailer task (Service mode) ─────────────────────────────
+
+    fn spawn_log_tailer(
+        &self,
+        log_path: PathBuf,
+        service_pid: u32,
+        started_at: Instant,
+    ) {
+        let log_file_arc = Arc::clone(&self.log_file);
         let stage_arc = Arc::clone(&self.current_stage);
         let stats_arc = Arc::clone(&self.stats);
-        let status_file_arc = Arc::clone(&self.status_file);
-        
-        // Record connection timestamp
-        {
-            let mut stats = stats_arc.lock().unwrap();
-            stats.connected_on = Some(std::time::SystemTime::now());
-        }
-        debug_log_to_file("[DEBUG] Connection timestamp recorded");
-        
-        // Task to read status file periodically for statistics
-        let stats_status = Arc::clone(&stats_arc);
-        let status_file_status = Arc::clone(&status_file_arc);
-        debug_log_to_file("[DEBUG] Spawning status file reader task");
+
         tokio::spawn(async move {
-            debug_log_to_file("[DEBUG] Status file reader task started");
+            let mut tailer = service_ipc::LogFileTailer::new(log_path);
             loop {
-                tokio::time::sleep(Duration::from_secs(2)).await;
-                
-                // Get the status file path
-                let status_file_path = {
-                    let status_file_guard = status_file_status.lock().unwrap();
-                    status_file_guard.clone()
-                };
-                
-                if let Some(ref status_path) = status_file_path {
-                    if let Ok(content) = std::fs::read_to_string(status_path) {
-                        parse_status_file(&content, &stats_status);
+                tokio::time::sleep(Duration::from_millis(300)).await;
+
+                // Stop signal: log_file set to None by disconnect().
+                {
+                    let guard = log_file_arc.lock().unwrap();
+                    if guard.is_none() {
+                        break;
                     }
-                } else {
-                    // Status file no longer available, exit task
-                    debug_log_to_file("[DEBUG] Status file no longer available, exiting reader task");
+                }
+
+                for line in tailer.read_new_lines() {
+                    if let Some(new_stage) = parse_stage_from_output(&line) {
+                        let mut current = stage_arc.lock().unwrap();
+                        let old = current.clone();
+                        if old != new_stage {
+                            log_stage_transition(
+                                "log_tailer",
+                                &old,
+                                &new_stage,
+                                &line,
+                                started_at,
+                            );
+                            *current = new_stage.clone();
+                            if new_stage == "connected" {
+                                let mut stats = stats_arc.lock().unwrap();
+                                if stats.connected_on.is_none() {
+                                    stats.connected_on =
+                                        Some(std::time::SystemTime::now());
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Detect process death.
+                if !service_ipc::is_pid_alive(service_pid) {
+                    let mut current = stage_arc.lock().unwrap();
+                    if *current != "connected"
+                        && *current != "disconnected"
+                        && *current != "disconnecting"
+                    {
+                        diag_log_to_file(&format!(
+                            "[RUST_STAGE] stream=log_tailer from={} to=error elapsedMs={} reasonCode=PROCESS_DIED trigger=\"PID {} gone\"",
+                            *current,
+                            started_at.elapsed().as_millis(),
+                            service_pid
+                        ));
+                        *current = "error".to_string();
+                    }
                     break;
                 }
             }
-            debug_log_to_file("[DEBUG] Status file reader task ended");
+            diag_log_to_file("[RUST_LOG_TAILER] task exited");
         });
-
-        // Task to read stdout
-        let stats_stdout = Arc::clone(&stats_arc);
-        let stage_stdout = Arc::clone(&stage_arc);
-        let start_stdout = connect_started_at;
-        debug_log_to_file("[DEBUG] Spawning stdout reader task");
-        tokio::spawn(async move {
-            debug_log_to_file("[DEBUG] stdout reader task started");
-            let reader = BufReader::new(stdout);
-            let mut lines = reader.lines();
-            let mut line_count = 0u64;
-            
-            loop {
-                match lines.next_line().await {
-                    Ok(Some(line)) => {
-                        line_count += 1;
-                        // Only log lines that contain important information or stage changes
-                        // Don't log every single line to reduce verbosity
-                        
-                        // Parse lines to detect stages
-                        let stage = parse_stage_from_output(&line);
-                        if let Some(new_stage) = stage {
-                            let mut current = stage_stdout.lock().unwrap();
-                            let old_stage = current.clone();
-                            
-                            // Only log if the stage actually changed
-                            if old_stage != new_stage {
-                                debug_log_to_file(&format!("[DEBUG] stdout: Stage updated from '{}' to '{}'", old_stage, new_stage));
-                                log_stage_transition("stdout", &old_stage, &new_stage, &line, start_stdout);
-                                *current = new_stage.clone();
-                                
-                                // If connected, update the timestamp
-                                if new_stage == "connected" {
-                                    debug_log_to_file("[DEBUG] stdout: CONNECTED stage detected!");
-                                    let mut stats = stats_stdout.lock().unwrap();
-                                    if stats.connected_on.is_none() {
-                                        stats.connected_on = Some(std::time::SystemTime::now());
-                                        debug_log_to_file("[DEBUG] stdout: Connection timestamp updated");
-                                    }
-                                }
-                            } else {
-                                // Stage didn't change, don't log
-                                drop(current);
-                            }
-                        }
-                        // Only log lines with errors, warnings, or critical messages
-                        // Remove "TAP" and "route" from the filter as they generate too many logs
-                        else if line.contains("ERROR") || line.contains("WARNING") || 
-                                line.contains("FATAL") || line.contains("Exiting") ||
-                                line.contains("Initialization Sequence Completed") ||
-                                line.contains("fatal error") || line.contains("failed") {
-                            debug_log_to_file(&format!("[DEBUG] stdout line #{}: {}", line_count, line));
-                        }
-                        // Don't log "No stage detected" messages at all
-                        
-                        // Parse statistics from output
-                        parse_stats_from_output(&line, &stats_stdout);
-                    }
-                    Ok(None) => {
-                        debug_log_to_file(&format!("[DEBUG] stdout: EOF reached (total lines: {})", line_count));
-                        break;
-                    }
-                    Err(e) => {
-                        debug_log_to_file(&format!("[DEBUG] stdout: ERROR reading line: {} (total lines read: {})", e, line_count));
-                        break;
-                    }
-                }
-            }
-            debug_log_to_file("[DEBUG] stdout reader task ended");
-        });
-
-        // Task to read stderr
-        let stats_stderr = Arc::clone(&stats_arc);
-        let stage_stderr = Arc::clone(&stage_arc);
-        let start_stderr = connect_started_at;
-        debug_log_to_file("[DEBUG] Spawning stderr reader task");
-        tokio::spawn(async move {
-            debug_log_to_file("[DEBUG] stderr reader task started");
-            let reader = BufReader::new(stderr);
-            let mut lines = reader.lines();
-            let mut line_count = 0u64;
-            
-            loop {
-                match lines.next_line().await {
-                    Ok(Some(line)) => {
-                        line_count += 1;
-                        debug_log_to_file(&format!("[DEBUG] stderr line #{}: {}", line_count, line));
-                        
-                        // Parse lines to detect stages
-                        let stage = parse_stage_from_output(&line);
-                        if let Some(new_stage) = stage {
-                            debug_log_to_file(&format!("[DEBUG] stderr: Stage detected: {}", new_stage));
-                            let mut current = stage_stderr.lock().unwrap();
-                            let old_stage = current.clone();
-                            if old_stage != new_stage {
-                                log_stage_transition("stderr", &old_stage, &new_stage, &line, start_stderr);
-                            }
-                            *current = new_stage.clone();
-                            debug_log_to_file(&format!("[DEBUG] stderr: Stage updated from '{}' to '{}'", old_stage, new_stage));
-                            
-                            // If connected, update the timestamp
-                            if new_stage == "connected" {
-                                debug_log_to_file("[DEBUG] stderr: CONNECTED stage detected!");
-                                let mut stats = stats_stderr.lock().unwrap();
-                                if stats.connected_on.is_none() {
-                                    stats.connected_on = Some(std::time::SystemTime::now());
-                                    debug_log_to_file("[DEBUG] stderr: Connection timestamp updated");
-                                }
-                            }
-                        } else {
-                            debug_log_to_file("[DEBUG] stderr: No stage detected in line");
-                        }
-                        
-                        // Parse statistics from output
-                        parse_stats_from_output(&line, &stats_stderr);
-                    }
-                    Ok(None) => {
-                        debug_log_to_file(&format!("[DEBUG] stderr: EOF reached (total lines: {})", line_count));
-                        break;
-                    }
-                    Err(e) => {
-                        debug_log_to_file(&format!("[DEBUG] stderr: ERROR reading line: {} (total lines read: {})", e, line_count));
-                        break;
-                    }
-                }
-            }
-            debug_log_to_file("[DEBUG] stderr reader task ended");
-        });
-
-        // Store the process
-        {
-            let mut process = process_arc.lock().unwrap();
-            *process = Some(child);
-        }
-        debug_log_to_file("[DEBUG] Process stored, connect() returning Ok");
-        diag_log_to_file(&format!(
-            "[RUST_CONNECT] phase=return_ok elapsedMs={}",
-            connect_started_at.elapsed().as_millis()
-        ));
-
-        Ok(())
     }
 
-    /// Disconnects the VPN
+    // ── Status file reader task (common) ────────────────────────────────
+
+    fn spawn_status_reader(&self) {
+        let stats_arc = Arc::clone(&self.stats);
+        let status_file_arc = Arc::clone(&self.status_file);
+
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                let path = {
+                    let guard = status_file_arc.lock().unwrap();
+                    guard.clone()
+                };
+                match path {
+                    Some(ref p) => {
+                        if let Ok(content) = std::fs::read_to_string(p) {
+                            parse_status_file(&content, &stats_arc);
+                        }
+                    }
+                    None => break,
+                }
+            }
+        });
+    }
+
+    // ── disconnect ──────────────────────────────────────────────────────
+
     pub async fn disconnect(&self) -> Result<(), OpenVpnError> {
         debug_log_to_file("[DEBUG] OpenVpnManager::disconnect() called");
-        
-        // Kill ALL OpenVPN processes (including daemons) when disconnecting
-        debug_log_to_file("[DEBUG] Killing all OpenVPN processes during disconnect");
-        kill_all_openvpn_processes().await;
-        
-        // Also clean up our tracked process if any
-        let mut process = self.process.lock().unwrap();
-        if let Some(mut child) = process.take() {
-            debug_log_to_file("[DEBUG] Killing tracked OpenVPN process");
-            // Try to kill the process, but don't fail if it's already dead
-            match child.kill().await {
-                Ok(_) => {
-                    debug_log_to_file("[DEBUG] OpenVPN process killed successfully");
-                }
-                Err(e) => {
-                    debug_log_to_file(&format!("[DEBUG] Warning: Failed to kill process (may already be dead): {}", e));
-                }
+
+        let managed = {
+            let mut process = self.process.lock().unwrap();
+            process.take()
+        };
+
+        match managed {
+            Some(ManagedProcess::Direct(mut child)) => {
+                kill_all_openvpn_processes().await;
+                let _ = child.kill().await;
+                let _ = child.wait().await;
+                debug_log_to_file("[DEBUG] Direct process cleaned up");
             }
-            
-            // Wait for the process to finish
-            let _ = child.wait().await;
-            debug_log_to_file("[DEBUG] OpenVPN process cleanup completed");
-        } else {
-            debug_log_to_file("[DEBUG] No tracked OpenVPN process to disconnect");
+            Some(ManagedProcess::Service { pid, .. }) => {
+                diag_log_to_file(&format!(
+                    "[RUST_DISCONNECT] mode=service pid={}",
+                    pid
+                ));
+                kill_process_by_pid(pid).await;
+            }
+            None => {
+                debug_log_to_file("[DEBUG] No tracked process to disconnect");
+            }
         }
-        
-        // Wait for Windows to release the previous tunnel adapter instance.
-        debug_log_to_file("[DEBUG] Waiting for tunnel adapter to be released...");
+
         tokio::time::sleep(Duration::from_millis(1500)).await;
-        debug_log_to_file("[DEBUG] Tunnel adapter release wait completed");
 
-        // Clean up temporary files
-        {
-            let mut config_file = self.config_file.lock().unwrap();
-            if let Some(ref path) = *config_file {
-                let _ = std::fs::remove_file(path);
-            }
-            *config_file = None;
-        }
-        
-        {
-            let mut auth_file = self.auth_file.lock().unwrap();
-            if let Some(ref path) = *auth_file {
-                let _ = std::fs::remove_file(path);
-            }
-            *auth_file = None;
-        }
-        
-        {
-            let mut status_file = self.status_file.lock().unwrap();
-            if let Some(ref path) = *status_file {
-                let _ = std::fs::remove_file(path);
-            }
-            *status_file = None;
-        }
+        // Clean up temp files
+        Self::cleanup_file(&self.config_file);
+        Self::cleanup_file(&self.auth_file);
+        Self::cleanup_file(&self.status_file);
+        Self::cleanup_file(&self.log_file);
 
-        // Reset the stage
-        let mut stage = self.current_stage.lock().unwrap();
-        *stage = "disconnected".to_string();
-        
-        // Reset statistics
-        let mut stats = self.stats.lock().unwrap();
-        *stats = VpnStats::default();
+        // Reset stage / stats
+        *self.current_stage.lock().unwrap() = "disconnected".to_string();
+        *self.stats.lock().unwrap() = VpnStats::default();
 
         Ok(())
     }
 
-    /// Gets the current stage
-    pub fn get_stage(&self) -> Result<String, OpenVpnError> {
-        let stage = self.current_stage.lock().unwrap();
-        let stage_str = stage.clone();
-        debug_log_to_file(&format!("[DEBUG] get_stage() called, returning: {}", stage_str));
-        Ok(stage_str)
+    fn cleanup_file(holder: &Arc<Mutex<Option<PathBuf>>>) {
+        let mut guard = holder.lock().unwrap();
+        if let Some(ref path) = *guard {
+            let _ = std::fs::remove_file(path);
+        }
+        *guard = None;
     }
-    
-    /// Gets the current statistics
+
+    // ── Getters ─────────────────────────────────────────────────────────
+
+    pub fn get_stage(&self) -> Result<String, OpenVpnError> {
+        let stage = self.current_stage.lock().unwrap().clone();
+        debug_log_to_file(&format!("[DEBUG] get_stage() -> {}", stage));
+        Ok(stage)
+    }
+
     pub fn get_stats(&self) -> Result<VpnStats, OpenVpnError> {
-        let stats = self.stats.lock().unwrap();
-        Ok(stats.clone())
+        Ok(self.stats.lock().unwrap().clone())
     }
 }
 
-/// Parses OpenVPN output to detect the stage
+// ── Output parsing ──────────────────────────────────────────────────────────
+
 fn parse_stage_from_output(line: &str) -> Option<String> {
     let line_lower = line.to_lowercase();
-    
-    // Mapping of OpenVPN messages to stages
+
     if line_lower.contains("initialization sequence completed") {
-        debug_log_to_file("[DEBUG] parse_stage: Matched 'initialization sequence completed' -> 'connected'");
         Some("connected".to_string())
     } else if line_lower.contains("auth_failed")
         || line_lower.contains("authentication failed")
@@ -681,175 +741,91 @@ fn parse_stage_from_output(line: &str) -> Option<String> {
         || line_lower.contains("options error")
         || line_lower.contains("fatal")
         || line_lower.contains("certificate verify failed")
-        || line_lower.contains("verify error") {
-        debug_log_to_file(&format!("[DEBUG] parse_stage: Critical VPN error detected: {} -> 'error'", line));
+        || line_lower.contains("verify error")
+    {
         Some("error".to_string())
     } else if line_lower.contains("connecting") || line_lower.contains("waiting") {
-        debug_log_to_file("[DEBUG] parse_stage: Matched 'connecting/waiting' -> 'connecting'");
         Some("connecting".to_string())
     } else if line_lower.contains("disconnecting") || line_lower.contains("exiting") {
-        debug_log_to_file("[DEBUG] parse_stage: Matched 'disconnecting/exiting' -> 'disconnecting'");
         Some("disconnecting".to_string())
     } else if line_lower.contains("authentication") || line_lower.contains("auth") {
-        debug_log_to_file("[DEBUG] parse_stage: Matched 'authentication/auth' -> 'authenticating'");
         Some("authenticating".to_string())
     } else if line_lower.contains("preserving previous tun/tap instance") {
-        // This line can appear during normal adapter reuse.
         None
     } else if (line_lower.contains("wintun") || line_lower.contains("tun/tap"))
         && (line_lower.contains("cannot create wintun adapter")
             || line_lower.contains("wintun.dll")
             || line_lower.contains("cannot allocate tun/tap")
-            || line_lower.contains("error_gen_failure")) {
-        // Specific Wintun/TUN errors - these are critical.
-        debug_log_to_file(&format!("[DEBUG] parse_stage: Wintun/TUN error detected: {} -> 'error'", line));
+            || line_lower.contains("error_gen_failure"))
+    {
         Some("error".to_string())
     } else if line_lower.contains("error") || line_lower.contains("failed") {
-        debug_log_to_file("[DEBUG] parse_stage: Matched 'error/failed' -> 'error'");
         Some("error".to_string())
     } else {
         None
     }
 }
 
-/// Parses statistics from OpenVPN output
-/// 
-/// OpenVPN can display statistics in different formats.
-/// We look for patterns like:
-/// - "TCP/UDP read bytes" / "TCP/UDP write bytes"
-/// - "TUN/TAP read bytes" / "TUN/TAP write bytes"
-/// - Management interface statistics messages
-/// 
-/// NOTE: OpenVPN doesn't always display statistics in stdout/stderr by default.
-/// For accurate statistics, the --management option with a socket should be used.
-/// For now, we use basic parsing that may not capture all statistics.
 fn parse_stats_from_output(line: &str, stats: &Arc<Mutex<VpnStats>>) {
     let line_lower = line.to_lowercase();
-    
-    // Patterns to detect statistics in OpenVPN output
-    // Possible format: "TCP/UDP read bytes, [number]"
-    // Possible format: "TUN/TAP read bytes, [number]"
-    // Possible format: "read bytes, [number]"
-    // Possible format: "write bytes, [number]"
-    
-    // Parsing for bytes read (download)
+
     if line_lower.contains("read bytes") || line_lower.contains("bytes read") {
-        // Try to extract the number
         if let Some(bytes) = extract_number_after_keyword(&line_lower, "read bytes") {
-            let mut stats_guard = stats.lock().unwrap();
-            // Use absolute value (no increment, as it's a total)
-            stats_guard.byte_in = bytes;
+            stats.lock().unwrap().byte_in = bytes;
         } else if let Some(bytes) = extract_number_after_keyword(&line_lower, "bytes read") {
-            let mut stats_guard = stats.lock().unwrap();
-            stats_guard.byte_in = bytes;
+            stats.lock().unwrap().byte_in = bytes;
         }
     }
-    
-    // Parsing for bytes written (upload)
     if line_lower.contains("write bytes") || line_lower.contains("bytes write") {
-        // Try to extract the number
         if let Some(bytes) = extract_number_after_keyword(&line_lower, "write bytes") {
-            let mut stats_guard = stats.lock().unwrap();
-            stats_guard.byte_out = bytes;
+            stats.lock().unwrap().byte_out = bytes;
         } else if let Some(bytes) = extract_number_after_keyword(&line_lower, "bytes write") {
-            let mut stats_guard = stats.lock().unwrap();
-            stats_guard.byte_out = bytes;
+            stats.lock().unwrap().byte_out = bytes;
         }
     }
-    
-    // Parsing for packets (rarer in standard output)
-    if line_lower.contains("packets read") || line_lower.contains("read packets") {
-        if let Some(packets) = extract_number_after_keyword(&line_lower, "packets read") {
-            let mut stats_guard = stats.lock().unwrap();
-            stats_guard.packets_in = packets;
-        } else if let Some(packets) = extract_number_after_keyword(&line_lower, "read packets") {
-            let mut stats_guard = stats.lock().unwrap();
-            stats_guard.packets_in = packets;
-        }
-    }
-    
-    if line_lower.contains("packets write") || line_lower.contains("write packets") {
-        if let Some(packets) = extract_number_after_keyword(&line_lower, "packets write") {
-            let mut stats_guard = stats.lock().unwrap();
-            stats_guard.packets_out = packets;
-        } else if let Some(packets) = extract_number_after_keyword(&line_lower, "write packets") {
-            let mut stats_guard = stats.lock().unwrap();
-            stats_guard.packets_out = packets;
-        }
-    }
-    
-    // Note: For more accurate and real-time statistics,
-    // we should implement support for OpenVPN's --management interface
-    // which allows querying statistics via a TCP socket
 }
 
-/// Parses OpenVPN status file to extract statistics
-/// 
-/// The status file format is:
-/// - Line 1: "OpenVPN STATISTICS"
-/// - Line 2: "Updated,<timestamp>"
-/// - Line 3+: Various statistics lines like "TUN/TAP read bytes,<bytes>"
 fn parse_status_file(content: &str, stats: &Arc<Mutex<VpnStats>>) {
     for line in content.lines() {
         let line = line.trim();
-        if line.is_empty() || line.starts_with("OpenVPN STATISTICS") || line.starts_with("Updated,") {
+        if line.is_empty()
+            || line.starts_with("OpenVPN STATISTICS")
+            || line.starts_with("Updated,")
+        {
             continue;
         }
-        
-        // Parse lines like "TUN/TAP read bytes,12345"
-        if line.starts_with("TUN/TAP read bytes,") {
-            if let Some(bytes_str) = line.split(',').nth(1) {
-                if let Ok(bytes) = bytes_str.trim().parse::<u64>() {
-                    let mut stats_guard = stats.lock().unwrap();
-                    stats_guard.byte_in = bytes;
-                }
+        if let Some(val) = line.strip_prefix("TUN/TAP read bytes,") {
+            if let Ok(b) = val.trim().parse::<u64>() {
+                stats.lock().unwrap().byte_in = b;
             }
-        } else if line.starts_with("TUN/TAP write bytes,") {
-            if let Some(bytes_str) = line.split(',').nth(1) {
-                if let Ok(bytes) = bytes_str.trim().parse::<u64>() {
-                    let mut stats_guard = stats.lock().unwrap();
-                    stats_guard.byte_out = bytes;
-                }
+        } else if let Some(val) = line.strip_prefix("TUN/TAP write bytes,") {
+            if let Ok(b) = val.trim().parse::<u64>() {
+                stats.lock().unwrap().byte_out = b;
             }
-        } else if line.starts_with("TCP/UDP read bytes,") {
-            if let Some(bytes_str) = line.split(',').nth(1) {
-                if let Ok(bytes) = bytes_str.trim().parse::<u64>() {
-                    let mut stats_guard = stats.lock().unwrap();
-                    stats_guard.byte_in = bytes;
-                }
+        } else if let Some(val) = line.strip_prefix("TCP/UDP read bytes,") {
+            if let Ok(b) = val.trim().parse::<u64>() {
+                stats.lock().unwrap().byte_in = b;
             }
-        } else if line.starts_with("TCP/UDP write bytes,") {
-            if let Some(bytes_str) = line.split(',').nth(1) {
-                if let Ok(bytes) = bytes_str.trim().parse::<u64>() {
-                    let mut stats_guard = stats.lock().unwrap();
-                    stats_guard.byte_out = bytes;
-                }
+        } else if let Some(val) = line.strip_prefix("TCP/UDP write bytes,") {
+            if let Ok(b) = val.trim().parse::<u64>() {
+                stats.lock().unwrap().byte_out = b;
             }
         }
     }
 }
 
-/// Extracts a number after a keyword in a line
-/// 
-/// Searches for the keyword and extracts the first number that follows (may be separated by spaces/punctuation)
 fn extract_number_after_keyword(line: &str, keyword: &str) -> Option<u64> {
-    if let Some(pos) = line.find(keyword) {
-        let after_keyword = &line[pos + keyword.len()..];
-        // Find the first number in the string (may be preceded by punctuation)
-        let number_str: String = after_keyword
-            .chars()
-            .skip_while(|c| !c.is_ascii_digit())
-            .take_while(|c| c.is_ascii_digit() || *c == ',')
-            .filter(|c| c.is_ascii_digit())
-            .collect();
-        
-        if !number_str.is_empty() {
-            number_str.parse::<u64>().ok()
-        } else {
-            None
-        }
-    } else {
+    let pos = line.find(keyword)?;
+    let after = &line[pos + keyword.len()..];
+    let number_str: String = after
+        .chars()
+        .skip_while(|c| !c.is_ascii_digit())
+        .take_while(|c| c.is_ascii_digit() || *c == ',')
+        .filter(|c| c.is_ascii_digit())
+        .collect();
+    if number_str.is_empty() {
         None
+    } else {
+        number_str.parse::<u64>().ok()
     }
 }
-
