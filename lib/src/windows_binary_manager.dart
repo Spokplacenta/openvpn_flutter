@@ -73,6 +73,9 @@ class WindowsBinaryManager {
   /// Subfolder for OpenVPN status files.
   static const String statusSubdir = 'status';
 
+  /// Machine-wide OpenVPN root under `%ProgramData%` (accessible to LocalSystem).
+  static const String machineRuntimeFolder = 'LavControl/OpenVPN';
+
   /// Version file name
   static const String versionFileName = 'openvpn_version.txt';
 
@@ -109,21 +112,48 @@ class WindowsBinaryManager {
     return openvpnDir;
   }
 
-  /// Directory where OpenVPN runtime binaries are stored.
+  /// Directory where OpenVPN runtime binaries are stored (per-user staging).
   static Future<Directory> getRuntimeDirectory() => _getStorageDirectory();
+
+  /// Machine-wide directory for the Interactive Service and shared config/log.
+  static Future<String> getMachineRuntimeDirectory() async {
+    final programData =
+        Platform.environment['ProgramData'] ?? r'C:\ProgramData';
+    final dir = Directory(
+      path.joinAll([programData, ...machineRuntimeFolder.split('/')]),
+    );
+    if (!await dir.exists()) {
+      try {
+        await dir.create(recursive: true);
+      } catch (_) {
+        // Elevated install creates this directory with proper ACLs.
+      }
+    }
+    return dir.path;
+  }
 
   /// Directory approved by the Interactive Service for `.ovpn` configs.
   static Future<String> getConfigDirectory() async {
-    final dir = await _getStorageDirectory();
-    final configDir = Directory(path.join(dir.path, configSubdir));
+    final machineDir = await getMachineRuntimeDirectory();
+    final configDir = Directory(path.join(machineDir, configSubdir));
     if (!await configDir.exists()) {
-      await configDir.create(recursive: true);
+      try {
+        await configDir.create(recursive: true);
+      } catch (_) {
+        // Created during elevated service install.
+      }
     }
     return configDir.path;
   }
 
-  /// Full path to the deployed Interactive Service binary.
+  /// Full path to the deployed Interactive Service binary (machine-wide).
   static Future<String> getInteractiveServicePath() async {
+    final machineDir = await getMachineRuntimeDirectory();
+    return path.join(machineDir, interactiveServiceBinaryName);
+  }
+
+  /// Staging path for the Interactive Service binary (per-user AppData).
+  static Future<String> getInteractiveServiceStagingPath() async {
     final dir = await _getStorageDirectory();
     return path.join(dir.path, interactiveServiceBinaryName);
   }

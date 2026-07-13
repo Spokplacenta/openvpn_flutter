@@ -259,19 +259,33 @@ impl OpenVpnManager {
         })
     }
 
-    /// Runtime directories derived from the deployed `openvpn.exe` location.
-    /// The Interactive Service only accepts configs under `config_dir`.
+    /// Runtime directories for configs/logs shared with the Interactive Service.
+    /// Must live under ProgramData so LocalSystem can access them.
     fn runtime_dirs(&self) -> (PathBuf, PathBuf, PathBuf) {
-        let base = self
-            .binary_path
-            .parent()
-            .map(|p| p.to_path_buf())
-            .unwrap_or_else(|| PathBuf::from("."));
-        (
-            base.join("config"),
-            base.join("log"),
-            base.join("status"),
-        )
+        #[cfg(target_os = "windows")]
+        {
+            let base = std::env::var("ProgramData")
+                .map(|p| PathBuf::from(p).join("LavControl").join("OpenVPN"))
+                .unwrap_or_else(|_| PathBuf::from(r"C:\ProgramData\LavControl\OpenVPN"));
+            return (
+                base.join("config"),
+                base.join("log"),
+                base.join("status"),
+            );
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let base = self
+                .binary_path
+                .parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_else(|| PathBuf::from("."));
+            (
+                base.join("config"),
+                base.join("log"),
+                base.join("status"),
+            )
+        }
     }
 
     fn ensure_runtime_dirs(
