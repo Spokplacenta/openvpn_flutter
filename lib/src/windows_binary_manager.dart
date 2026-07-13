@@ -577,13 +577,15 @@ class WindowsBinaryManager {
       String binaryPath) async {
     final targetDir = Directory(path.dirname(binaryPath));
     final missing = await _missingRuntimeDlls(targetDir.path);
-    if (missing.isEmpty) {
-      return;
+    if (missing.isNotEmpty) {
+      debugPrint(
+          '⚠️ [OpenVPN] DLL runtime manquantes détectées (${missing.join(", ")}), tentative de réparation via assets.');
+      await _deployRuntimeDllsFromAssets(targetDir, failIfMissing: true);
     }
 
-    debugPrint(
-        '⚠️ [OpenVPN] DLL runtime manquantes détectées (${missing.join(", ")}), tentative de réparation via assets.');
-    await _deployRuntimeDllsFromAssets(targetDir, failIfMissing: true);
+    // Toujours garantir la présence du service Interactive: les installations
+    // antérieures à son introduction ont déjà openvpn.exe + DLL runtime, donc
+    // le déploiement doit se faire même quand aucune DLL ne manque.
     await _deployInteractiveServiceBinaries(targetDir);
   }
 
