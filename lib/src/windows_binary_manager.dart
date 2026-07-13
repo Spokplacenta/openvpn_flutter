@@ -54,6 +54,25 @@ class WindowsBinaryManager {
   /// Binary file name
   static const String binaryName = 'openvpn.exe';
 
+  /// Interactive Service binary (launches openvpn.exe as SYSTEM via named pipe).
+  static const String interactiveServiceBinaryName = 'openvpnserv.exe';
+
+  /// Message DLL used by the Interactive Service for event-log entries.
+  static const String interactiveServiceMsgDll = 'openvpnservmsg.dll';
+
+  /// SHA256 of the embedded `openvpnserv.exe` (OpenVPN 2.6.16).
+  static const String? expectedInteractiveServiceHash =
+      '19EC0DD386319FB543567A3AE426AA7980F4D1F844FC8EDB3CCB55E43B5DFA6E';
+
+  /// Subfolder under the OpenVPN runtime directory for `.ovpn` configs.
+  static const String configSubdir = 'config';
+
+  /// Subfolder for OpenVPN log files (service mode).
+  static const String logSubdir = 'log';
+
+  /// Subfolder for OpenVPN status files.
+  static const String statusSubdir = 'status';
+
   /// Version file name
   static const String versionFileName = 'openvpn_version.txt';
 
@@ -88,6 +107,25 @@ class WindowsBinaryManager {
       await openvpnDir.create(recursive: true);
     }
     return openvpnDir;
+  }
+
+  /// Directory where OpenVPN runtime binaries are stored.
+  static Future<Directory> getRuntimeDirectory() => _getStorageDirectory();
+
+  /// Directory approved by the Interactive Service for `.ovpn` configs.
+  static Future<String> getConfigDirectory() async {
+    final dir = await _getStorageDirectory();
+    final configDir = Directory(path.join(dir.path, configSubdir));
+    if (!await configDir.exists()) {
+      await configDir.create(recursive: true);
+    }
+    return configDir.path;
+  }
+
+  /// Full path to the deployed Interactive Service binary.
+  static Future<String> getInteractiveServicePath() async {
+    final dir = await _getStorageDirectory();
+    return path.join(dir.path, interactiveServiceBinaryName);
   }
 
   /// Gets the full path to openvpn.exe
@@ -197,6 +235,9 @@ class WindowsBinaryManager {
             sourceDirectoryPath: sourceDirectoryPath,
             targetDirectoryPath: targetDirectoryPath,
             failIfMissing: true,
+          );
+          await _deployInteractiveServiceBinaries(
+            Directory(targetDirectoryPath),
           );
           await File(extractedPath).delete(); // Clean up temporary file
         } else {
@@ -342,6 +383,15 @@ class WindowsBinaryManager {
       final dllFile = File(path.join(dir.path, dllName));
       if (await dllFile.exists()) {
         await dllFile.delete();
+      }
+    }
+    for (final fileName in [
+      interactiveServiceBinaryName,
+      interactiveServiceMsgDll,
+    ]) {
+      final file = File(path.join(dir.path, fileName));
+      if (await file.exists()) {
+        await file.delete();
       }
     }
   }
@@ -515,6 +565,7 @@ class WindowsBinaryManager {
 
     // Deploy runtime dependencies next to openvpn.exe.
     await _deployRuntimeDllsFromAssets(Directory(path.dirname(binaryPath)));
+    await _deployInteractiveServiceBinaries(Directory(path.dirname(binaryPath)));
 
     await _saveInstalledVersion(targetVersion);
     await _persistHashFile();
@@ -533,6 +584,78 @@ class WindowsBinaryManager {
     debugPrint(
         '⚠️ [OpenVPN] DLL runtime manquantes détectées (${missing.join(", ")}), tentative de réparation via assets.');
     await _deployRuntimeDllsFromAssets(targetDir, failIfMissing: true);
+    await _deployInteractiveServiceBinaries(targetDir);
+  }
+
+  static Future<void> _deployInteractiveServiceBinaries(
+    Directory targetDir, {
+    bool failIfMissing = true,
+  }) async {
+    final servPath = path.join(
+      targetDir.path,
+      interactiveServiceBinaryName,
+    );
+    final servFile = File(servPath);
+    if (!await servFile.exists()) {
+      final data = await _loadPluginAssetBytes(
+        '$interactiveServiceBinaryName.bin',
+        allowBinSuffix: false,
+      );
+      if (data == null) {
+        if (failIfMissing) {
+          throw Exception(
+            'Binaire Interactive Service manquant dans les assets: '
+            '$interactiveServiceBinaryName.bin',
+          );
+        }
+        return;
+      }
+      await _writeAssetToPath(data, servPath);
+      if (expectedInteractiveServiceHash != null) {
+        await _verifyHashWithExpected(
+          File(servPath),
+          expectedInteractiveServiceHash!,
+        );
+      }
+      debugPrint('✅ [OpenVPN] Interactive Service déployé: $servPath');
+    }
+
+    final msgPath = path.join(targetDir.path, interactiveServiceMsgDll);
+    if (!await File(msgPath).exists()) {
+      final msgData = await _loadPluginAssetBytes(
+        '$interactiveServiceMsgDll.bin',
+        allowBinSuffix: false,
+      );
+      if (msgData != null) {
+        await _writeAssetToPath(msgData, msgPath);
+        debugPrint('✅ [OpenVPN] DLL service déployée: $msgPath');
+      }
+    }
+  }
+
+  static Future<void> _writeAssetToPath(ByteData data, String targetPath) async {
+    final tempFile = File('$targetPath.part');
+    await tempFile.writeAsBytes(
+      data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes),
+    );
+    final targetFile = File(targetPath);
+    if (await targetFile.exists()) {
+      await targetFile.delete();
+    }
+    await tempFile.rename(targetPath);
+  }
+
+  static Future<void> _verifyHashWithExpected(
+    File file,
+    String expected,
+  ) async {
+    final actualHash = await calculateFileHash(file);
+    if (actualHash.toLowerCase() != expected.toLowerCase()) {
+      await file.delete();
+      throw Exception(
+        'Hash mismatch for ${file.path}. Expected: $expected, got: $actualHash',
+      );
+    }
   }
 
   static Future<void> _deployRuntimeDllsFromAssets(

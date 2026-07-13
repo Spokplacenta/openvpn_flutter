@@ -259,6 +259,32 @@ impl OpenVpnManager {
         })
     }
 
+    /// Runtime directories derived from the deployed `openvpn.exe` location.
+    /// The Interactive Service only accepts configs under `config_dir`.
+    fn runtime_dirs(&self) -> (PathBuf, PathBuf, PathBuf) {
+        let base = self
+            .binary_path
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| PathBuf::from("."));
+        (
+            base.join("config"),
+            base.join("log"),
+            base.join("status"),
+        )
+    }
+
+    fn ensure_runtime_dirs(
+        config_dir: &PathBuf,
+        log_dir: &PathBuf,
+        status_dir: &PathBuf,
+    ) -> Result<(), OpenVpnError> {
+        for dir in [config_dir, log_dir, status_dir] {
+            std::fs::create_dir_all(dir).map_err(OpenVpnError::IoError)?;
+        }
+        Ok(())
+    }
+
     // ── connect ─────────────────────────────────────────────────────────
 
     pub async fn connect(
@@ -294,14 +320,17 @@ impl OpenVpnManager {
         }
         tokio::time::sleep(Duration::from_millis(1000)).await;
 
-        // ── 2. Write temporary files (common to both paths) ─────────────
-        let temp_dir = std::env::temp_dir();
+        // ── 2. Write runtime files under the OpenVPN runtime directory ──
+        // The Interactive Service rejects configs outside `config_dir`.
+        let (config_dir, log_dir, status_dir) = self.runtime_dirs();
+        Self::ensure_runtime_dirs(&config_dir, &log_dir, &status_dir)?;
+
         let ts = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs();
 
-        let config_file = temp_dir.join(format!("openvpn_config_{}.ovpn", ts));
+        let config_file = config_dir.join(format!("openvpn_config_{}.ovpn", ts));
         std::fs::write(&config_file, config).map_err(OpenVpnError::IoError)?;
         debug_log_to_file(&format!(
             "[DEBUG] Config written: {}",
@@ -314,14 +343,14 @@ impl OpenVpnManager {
                 username.as_ref().unwrap(),
                 password.as_ref().unwrap()
             );
-            let path = temp_dir.join(format!("openvpn_auth_{}.txt", ts));
+            let path = config_dir.join(format!("openvpn_auth_{}.txt", ts));
             std::fs::write(&path, content).map_err(OpenVpnError::IoError)?;
             Some(path)
         } else {
             None
         };
 
-        let status_file_path = temp_dir.join(format!("openvpn_status_{}.txt", ts));
+        let status_file_path = status_dir.join(format!("openvpn_status_{}.txt", ts));
 
         // Store common temp paths
         {
@@ -339,19 +368,24 @@ impl OpenVpnManager {
         }
 
         // ── 3. Try IPC Interactive Service path ─────────────────────────
-        // Restart the service to clear any stale pipe state left by
-        // previously killed openvpn.exe processes.
-        let service_restarted = restart_interactive_service().await;
+        // Only restart the service when the pipe is unavailable (avoids
+        // pointless net stop/start attempts from a non-elevated process).
+        let service_available_before = service_ipc::is_service_available();
+        let service_restarted = if !service_available_before {
+            restart_interactive_service().await
+        } else {
+            false
+        };
         let service_available = service_ipc::is_service_available();
         diag_log_to_file(&format!(
-            "[RUST_CONNECT] phase=service_check serviceRestarted={} serviceAvailable={}",
-            service_restarted, service_available
+            "[RUST_CONNECT] phase=service_check serviceAvailableBefore={} serviceRestarted={} serviceAvailable={}",
+            service_available_before, service_restarted, service_available
         ));
 
         let mut used_service = false;
 
         if service_available {
-            let log_file_path = temp_dir.join(format!("openvpn_log_{}.txt", ts));
+            let log_file_path = log_dir.join(format!("openvpn_log_{}.txt", ts));
             {
                 *self.log_file.lock().unwrap() = Some(log_file_path.clone());
             }
@@ -371,7 +405,7 @@ impl OpenVpnManager {
                 opts.push_str(" --windows-driver wintun");
             }
 
-            let working_dir = temp_dir.to_string_lossy().to_string();
+            let working_dir = config_dir.to_string_lossy().to_string();
 
             diag_log_to_file(&format!(
                 "[RUST_CONNECT] phase=service_ipc_attempt workingDir=\"{}\" optsLen={}",
