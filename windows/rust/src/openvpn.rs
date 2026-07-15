@@ -57,10 +57,18 @@ fn classify_reason(line: &str) -> &'static str {
     let line_lower = line.to_lowercase();
     if line_lower.contains("auth_failed") || line_lower.contains("authentication failed") {
         "AUTH_FAILED"
-    } else if line_lower.contains("wintun requires system privileges")
-        || line_lower.contains("should be used with interactive service")
+    } else if line_lower.contains("ovpn-dco")
+        && (line_lower.contains("failed")
+            || line_lower.contains("error")
+            || line_lower.contains("not installed"))
     {
-        "WINTUN_SYSTEM_PRIVILEGE_REQUIRED"
+        "OVPN_DCO_FAILED"
+    } else if line_lower.contains("tap-windows")
+        && (line_lower.contains("failed")
+            || line_lower.contains("not found")
+            || line_lower.contains("cannot allocate"))
+    {
+        "TAP_ADAPTER_MISSING"
     } else if line_lower.contains("tls handshake failed") || line_lower.contains("tls error") {
         "TLS_FAILED"
     } else if line_lower.contains("cannot resolve host address")
@@ -75,10 +83,6 @@ fn classify_reason(line: &str) -> &'static str {
         || line_lower.contains("verify error")
     {
         "CERT_VERIFY_FAILED"
-    } else if line_lower.contains("wintun")
-        && line_lower.contains("cannot create wintun adapter")
-    {
-        "WINTUN_CREATE_FAILED"
     } else if line_lower.contains("network is unreachable") {
         "NETWORK_UNREACHABLE"
     } else if line_lower.contains("fatal") {
@@ -98,6 +102,113 @@ fn log_stage_transition(stream: &str, from: &str, to: &str, line: &str, start: I
         "[RUST_STAGE] stream={} from={} to={} elapsedMs={} reasonCode={} trigger=\"{}\"",
         stream, from, to, elapsed_ms, reason_code, trigger_line
     ));
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum DriverStrategy {
+    OvpnDco,
+    TapWindows6,
+}
+
+#[derive(Debug)]
+enum ConnectOutcome {
+    Connected,
+    DriverFailed,
+    FatalError,
+    StillRunning,
+}
+
+fn preprocess_config_for_driver(config: &str, strategy: DriverStrategy) -> String {
+    let mut out: Vec<String> = config
+        .lines()
+        .filter(|line| {
+            let t = line.trim().to_lowercase();
+            !t.starts_with("disable-dco") && !t.starts_with("windows-driver")
+        })
+        .map(|s| s.to_string())
+        .collect();
+
+    if strategy == DriverStrategy::TapWindows6 {
+        out.push("disable-dco".to_string());
+    }
+    out.join("\n")
+}
+
+fn build_service_cli_options(
+    config_file: &PathBuf,
+    auth_file: &Option<PathBuf>,
+    status_file: &PathBuf,
+    log_file: &PathBuf,
+    strategy: DriverStrategy,
+) -> String {
+    let mut opts = format!("--config \"{}\"", config_file.display());
+    if let Some(ref ap) = auth_file {
+        opts.push_str(&format!(" --auth-user-pass \"{}\"", ap.display()));
+    }
+    opts.push_str(" --verb 4");
+    opts.push_str(&format!(" --status \"{}\" 2", status_file.display()));
+    opts.push_str(&format!(" --log \"{}\"", log_file.display()));
+    match strategy {
+        DriverStrategy::OvpnDco => opts.push_str(" --windows-driver ovpn-dco"),
+        DriverStrategy::TapWindows6 => opts.push_str(" --windows-driver tap-windows6"),
+    }
+    opts
+}
+
+fn driver_strategy_label(strategy: DriverStrategy) -> &'static str {
+    match strategy {
+        DriverStrategy::OvpnDco => "ovpn-dco_via_service",
+        DriverStrategy::TapWindows6 => "tap-windows6_fallback",
+    }
+}
+
+fn is_dco_failure_line(line: &str) -> bool {
+    let l = line.to_lowercase();
+    if l.contains("cannot allocate tun/tap") {
+        return true;
+    }
+    if l.contains("tap-windows6") && l.contains("currently in use") {
+        return true;
+    }
+    (l.contains("ovpn-dco") || l.contains("dco version: n/a") || l.contains("data channel offload"))
+        && (l.contains("failed")
+            || l.contains("error")
+            || l.contains("not found")
+            || l.contains("not installed")
+            || l.contains("cannot"))
+}
+
+async fn wait_for_connect_outcome(
+    log_path: &PathBuf,
+    pid: u32,
+    timeout: Duration,
+) -> ConnectOutcome {
+    let started = Instant::now();
+    let mut tailer = service_ipc::LogFileTailer::new(log_path.clone());
+
+    while started.elapsed() < timeout {
+        tokio::time::sleep(Duration::from_millis(300)).await;
+
+        if !service_ipc::is_pid_alive(pid) {
+            return ConnectOutcome::FatalError;
+        }
+
+        for line in tailer.read_new_lines() {
+            let lower = line.to_lowercase();
+            if lower.contains("initialization sequence completed") {
+                return ConnectOutcome::Connected;
+            }
+            if is_dco_failure_line(&line) {
+                return ConnectOutcome::DriverFailed;
+            }
+            if let Some(stage) = parse_stage_from_output(&line) {
+                if stage == "error" {
+                    return ConnectOutcome::FatalError;
+                }
+            }
+        }
+    }
+    ConnectOutcome::StillRunning
 }
 
 async fn kill_all_openvpn_processes() {
@@ -210,6 +321,10 @@ pub struct VpnStats {
     pub packets_in: u64,
     pub packets_out: u64,
     pub connected_on: Option<std::time::SystemTime>,
+    /// Active Windows driver: "ovpn-dco" or "tap-windows6".
+    pub windows_driver: Option<String>,
+    /// How openvpn.exe was launched: "service" or "direct".
+    pub windows_connect_mode: Option<String>,
 }
 
 /// Tracks how the current openvpn.exe was launched.
@@ -345,11 +460,7 @@ impl OpenVpnManager {
             .as_secs();
 
         let config_file = config_dir.join(format!("openvpn_config_{}.ovpn", ts));
-        std::fs::write(&config_file, config).map_err(OpenVpnError::IoError)?;
-        debug_log_to_file(&format!(
-            "[DEBUG] Config written: {}",
-            config_file.display()
-        ));
+        // Config body is written per driver attempt (DCO strips disable-dco).
 
         let auth_file = if username.is_some() && password.is_some() {
             let content = format!(
@@ -397,6 +508,7 @@ impl OpenVpnManager {
         ));
 
         let mut used_service = false;
+        let mut active_driver = DriverStrategy::OvpnDco;
 
         if service_available {
             let log_file_path = log_dir.join(format!("openvpn_log_{}.txt", ts));
@@ -404,83 +516,146 @@ impl OpenVpnManager {
                 *self.log_file.lock().unwrap() = Some(log_file_path.clone());
             }
 
-            // Build CLI options — always force wintun when going through the
-            // service (it runs as SYSTEM so has the required privileges).
-            let mut opts = format!("--config \"{}\"", config_file.display());
-            if let Some(ref ap) = auth_file {
-                opts.push_str(&format!(" --auth-user-pass \"{}\"", ap.display()));
-            }
-            opts.push_str(" --verb 4");
-            opts.push_str(&format!(" --status \"{}\" 2", status_file_path.display()));
-            opts.push_str(&format!(" --log \"{}\"", log_file_path.display()));
-
-            let config_lower = config.to_lowercase();
-            if !config_lower.contains("windows-driver") {
-                opts.push_str(" --windows-driver wintun");
-            }
-
             let working_dir = config_dir.to_string_lossy().to_string();
+            let strategies = [DriverStrategy::OvpnDco, DriverStrategy::TapWindows6];
+            let mut connected = false;
 
-            diag_log_to_file(&format!(
-                "[RUST_CONNECT] phase=service_ipc_attempt workingDir=\"{}\" optsLen={}",
-                working_dir,
-                opts.len()
-            ));
+            for (idx, strategy) in strategies.iter().enumerate() {
+                if idx > 0 {
+                    kill_all_openvpn_processes().await;
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                }
 
-            match service_ipc::connect_and_launch(&working_dir, &opts, "") {
-                Ok(response) => {
-                    diag_log_to_file(&format!(
-                        "[RUST_CONNECT] phase=service_ipc_ok pid={} desc=\"{}\" driverStrategy=wintun_via_service elapsedMs={}",
-                        response.pid,
-                        response.description,
-                        connect_started_at.elapsed().as_millis()
-                    ));
+                let processed = preprocess_config_for_driver(config, *strategy);
+                std::fs::write(&config_file, &processed).map_err(OpenVpnError::IoError)?;
+                debug_log_to_file(&format!(
+                    "[DEBUG] Config written for {}: {}",
+                    driver_strategy_label(*strategy),
+                    config_file.display()
+                ));
 
-                    {
-                        let mut process = self.process.lock().unwrap();
-                        *process = Some(ManagedProcess::Service {
-                            pid: response.pid,
-                        });
+                let opts = build_service_cli_options(
+                    &config_file,
+                    &auth_file,
+                    &status_file_path,
+                    &log_file_path,
+                    *strategy,
+                );
+
+                diag_log_to_file(&format!(
+                    "[RUST_CONNECT] phase=service_ipc_attempt driverStrategy={} workingDir=\"{}\" optsLen={}",
+                    driver_strategy_label(*strategy),
+                    working_dir,
+                    opts.len()
+                ));
+
+                match service_ipc::connect_and_launch(&working_dir, &opts, "") {
+                    Ok(response) => {
+                        let outcome = wait_for_connect_outcome(
+                            &log_file_path,
+                            response.pid,
+                            Duration::from_secs(20),
+                        )
+                        .await;
+
+                        diag_log_to_file(&format!(
+                            "[RUST_CONNECT] phase=service_ipc_ok pid={} desc=\"{}\" driverStrategy={} outcome={:?} elapsedMs={}",
+                            response.pid,
+                            response.description,
+                            driver_strategy_label(*strategy),
+                            outcome,
+                            connect_started_at.elapsed().as_millis()
+                        ));
+
+                        match outcome {
+                            ConnectOutcome::Connected | ConnectOutcome::StillRunning => {
+                                {
+                                    let mut process = self.process.lock().unwrap();
+                                    *process = Some(ManagedProcess::Service {
+                                        pid: response.pid,
+                                    });
+                                }
+                                self.spawn_log_tailer(
+                                    log_file_path.clone(),
+                                    response.pid,
+                                    connect_started_at,
+                                );
+                                used_service = true;
+                                active_driver = *strategy;
+                                connected = true;
+                                break;
+                            }
+                            ConnectOutcome::DriverFailed
+                                if *strategy == DriverStrategy::OvpnDco =>
+                            {
+                                kill_process_by_pid(response.pid).await;
+                                diag_log_to_file(
+                                    "[RUST_CONNECT] phase=dco_failed fallback=tap-windows6",
+                                );
+                                continue;
+                            }
+                            ConnectOutcome::DriverFailed | ConnectOutcome::FatalError => {
+                                kill_process_by_pid(response.pid).await;
+                                break;
+                            }
+                        }
                     }
-
-                    // Spawn log file tailer task (replaces stdout/stderr readers)
-                    self.spawn_log_tailer(
-                        log_file_path,
-                        response.pid,
-                        connect_started_at,
-                    );
-
-                    used_service = true;
+                    Err(e) => {
+                        diag_log_to_file(&format!(
+                            "[RUST_CONNECT] phase=service_ipc_failed driverStrategy={} error=\"{}\"",
+                            driver_strategy_label(*strategy),
+                            e
+                        ));
+                        if *strategy == DriverStrategy::OvpnDco {
+                            continue;
+                        }
+                        *self.log_file.lock().unwrap() = None;
+                    }
                 }
-                Err(e) => {
-                    diag_log_to_file(&format!(
-                        "[RUST_CONNECT] phase=service_ipc_failed error=\"{}\" fallback=direct",
-                        e
-                    ));
-                    // Clear log_file — we won't use it in direct mode.
-                    *self.log_file.lock().unwrap() = None;
-                }
+            }
+
+            if !connected {
+                *self.log_file.lock().unwrap() = None;
             }
         }
 
-        // ── 4. Fallback: direct launch ──────────────────────────────────
+        // ── 4. Fallback: direct launch (TAP only — DCO needs service) ───
         if !used_service {
+            let processed = preprocess_config_for_driver(config, DriverStrategy::TapWindows6);
+            std::fs::write(&config_file, &processed).map_err(OpenVpnError::IoError)?;
             self.connect_direct(
-                config,
+                &processed,
                 &config_file,
                 &auth_file,
                 &status_file_path,
                 connect_started_at,
             )
             .await?;
+            active_driver = DriverStrategy::TapWindows6;
         }
 
         // ── 5. Spawn status file reader (common) ────────────────────────
         self.spawn_status_reader();
 
+        {
+            let mut stats = self.stats.lock().unwrap();
+            stats.windows_driver = Some(match active_driver {
+                DriverStrategy::OvpnDco => "ovpn-dco".to_string(),
+                DriverStrategy::TapWindows6 => "tap-windows6".to_string(),
+            });
+            stats.windows_connect_mode = Some(
+                if used_service {
+                    "service".to_string()
+                } else {
+                    "direct".to_string()
+                },
+            );
+        }
+
         diag_log_to_file(&format!(
-            "[RUST_CONNECT] phase=return_ok mode={} elapsedMs={}",
+            "[RUST_CONNECT] phase=return_ok mode={} driverStrategy={} elapsedMs={}",
             if used_service { "service" } else { "direct" },
+            driver_strategy_label(active_driver),
             connect_started_at.elapsed().as_millis()
         ));
 
@@ -491,7 +666,7 @@ impl OpenVpnManager {
 
     async fn connect_direct(
         &self,
-        config: &str,
+        _config: &str,
         config_file: &PathBuf,
         auth_file: &Option<PathBuf>,
         status_file_path: &PathBuf,
@@ -506,20 +681,8 @@ impl OpenVpnManager {
 
         cmd.arg("--verb").arg("4");
 
-        // In direct mode, Wintun can never work (it requires SYSTEM privileges,
-        // not just admin elevation). Always use tap-windows6 unless the config
-        // explicitly specifies a driver.
-        let config_lower = config.to_lowercase();
-        if !config_lower.contains("windows-driver") {
-            cmd.arg("--windows-driver").arg("tap-windows6");
-            diag_log_to_file(
-                "[RUST_CONNECT] driverStrategy=tap-windows6_direct_mode",
-            );
-        } else {
-            diag_log_to_file(
-                "[RUST_CONNECT] driverStrategy=config_defined mode=direct",
-            );
-        }
+        cmd.arg("--windows-driver").arg("tap-windows6");
+        diag_log_to_file("[RUST_CONNECT] driverStrategy=tap-windows6_direct_mode");
 
         cmd.arg("--status").arg(status_file_path).arg("2");
 
@@ -648,8 +811,17 @@ impl OpenVpnManager {
         let stage_arc = Arc::clone(&self.current_stage);
         let stats_arc = Arc::clone(&self.stats);
 
+        // #region agent log
+        let log_path_for_dump = log_path.clone();
+        // #endregion
         tokio::spawn(async move {
             let mut tailer = service_ipc::LogFileTailer::new(log_path);
+            // The interactive service may return before openvpn.exe is fully
+            // visible to OpenProcess; avoid a single false-negative death check.
+            const PID_ALIVE_GRACE: Duration = Duration::from_secs(15);
+            const PID_DEAD_CHECKS_REQUIRED: u32 = 5;
+            let mut consecutive_dead_checks: u32 = 0;
+
             loop {
                 tokio::time::sleep(Duration::from_millis(300)).await;
 
@@ -685,22 +857,59 @@ impl OpenVpnManager {
                     }
                 }
 
-                // Detect process death.
-                if !service_ipc::is_pid_alive(service_pid) {
-                    let mut current = stage_arc.lock().unwrap();
-                    if *current != "connected"
-                        && *current != "disconnected"
-                        && *current != "disconnecting"
-                    {
+                // Detect process death (after grace period, require consecutive misses).
+                if started_at.elapsed() >= PID_ALIVE_GRACE {
+                    if service_ipc::is_pid_alive(service_pid) {
+                        consecutive_dead_checks = 0;
+                    } else {
+                        consecutive_dead_checks += 1;
                         diag_log_to_file(&format!(
-                            "[RUST_STAGE] stream=log_tailer from={} to=error elapsedMs={} reasonCode=PROCESS_DIED trigger=\"PID {} gone\"",
-                            *current,
-                            started_at.elapsed().as_millis(),
-                            service_pid
+                            "[RUST_PID_CHECK] pid={} alive=false consecutive={}/{} elapsedMs={}",
+                            service_pid,
+                            consecutive_dead_checks,
+                            PID_DEAD_CHECKS_REQUIRED,
+                            started_at.elapsed().as_millis()
                         ));
-                        *current = "error".to_string();
+                        if consecutive_dead_checks >= PID_DEAD_CHECKS_REQUIRED {
+                            // #region agent log
+                            match std::fs::read_to_string(&log_path_for_dump) {
+                                Ok(content) => {
+                                    let tail: Vec<&str> =
+                                        content.lines().rev().take(50).collect();
+                                    let joined: String = tail
+                                        .into_iter()
+                                        .rev()
+                                        .collect::<Vec<&str>>()
+                                        .join(" || ");
+                                    diag_log_to_file(&format!(
+                                        "[RUST_LOG_DUMP] pid={} died; openvpn log tail: {}",
+                                        service_pid, joined
+                                    ));
+                                }
+                                Err(e) => diag_log_to_file(&format!(
+                                    "[RUST_LOG_DUMP] pid={} died; cannot read log {}: {}",
+                                    service_pid,
+                                    log_path_for_dump.display(),
+                                    e
+                                )),
+                            }
+                            // #endregion
+                            let mut current = stage_arc.lock().unwrap();
+                            if *current != "connected"
+                                && *current != "disconnected"
+                                && *current != "disconnecting"
+                            {
+                                diag_log_to_file(&format!(
+                                    "[RUST_STAGE] stream=log_tailer from={} to=error elapsedMs={} reasonCode=PROCESS_DIED trigger=\"PID {} gone\"",
+                                    *current,
+                                    started_at.elapsed().as_millis(),
+                                    service_pid
+                                ));
+                                *current = "error".to_string();
+                            }
+                            break;
+                        }
                     }
-                    break;
                 }
             }
             diag_log_to_file("[RUST_LOG_TAILER] task exited");
@@ -712,6 +921,7 @@ impl OpenVpnManager {
     fn spawn_status_reader(&self) {
         let stats_arc = Arc::clone(&self.stats);
         let status_file_arc = Arc::clone(&self.status_file);
+        let stage_arc = Arc::clone(&self.current_stage);
 
         tokio::spawn(async move {
             loop {
@@ -724,6 +934,26 @@ impl OpenVpnManager {
                     Some(ref p) => {
                         if let Ok(content) = std::fs::read_to_string(p) {
                             parse_status_file(&content, &stats_arc);
+                            // Backup connected detection when the log tailer
+                            // missed "Initialization Sequence Completed".
+                            if content.contains("TUN/TAP read bytes,")
+                                && content.contains("END")
+                            {
+                                let mut current = stage_arc.lock().unwrap();
+                                if *current != "connected" && *current != "disconnecting" {
+                                    let from_stage = current.clone();
+                                    diag_log_to_file(&format!(
+                                        "[RUST_STAGE] stream=status_reader from={} to=connected reasonCode=STATUS_TUN_ACTIVE",
+                                        from_stage
+                                    ));
+                                    *current = "connected".to_string();
+                                    let mut stats = stats_arc.lock().unwrap();
+                                    if stats.connected_on.is_none() {
+                                        stats.connected_on =
+                                            Some(std::time::SystemTime::now());
+                                    }
+                                }
+                            }
                         }
                     }
                     None => break,
@@ -828,13 +1058,22 @@ fn parse_stage_from_output(line: &str) -> Option<String> {
         Some("authenticating".to_string())
     } else if line_lower.contains("preserving previous tun/tap instance") {
         None
-    } else if (line_lower.contains("wintun") || line_lower.contains("tun/tap"))
-        && (line_lower.contains("cannot create wintun adapter")
-            || line_lower.contains("wintun.dll")
-            || line_lower.contains("cannot allocate tun/tap")
-            || line_lower.contains("error_gen_failure"))
+    } else if (line_lower.contains("ovpn-dco") || line_lower.contains("tun/tap"))
+        && (line_lower.contains("cannot allocate tun/tap")
+            || line_lower.contains("error_gen_failure")
+            || line_lower.contains("not installed"))
     {
         Some("error".to_string())
+    } else if line_lower.contains("register_dns")
+        || line_lower.contains("warning:")
+        || line_lower.contains("nonfatal")
+    {
+        // Non-fatal OpenVPN diagnostics (e.g. "Register_dns failed using
+        // service") must NOT tear down an already-established tunnel. openvpn
+        // keeps running after them. Without this guard the generic error/failed
+        // catch-all below flips the stage to `error`, and the app disconnects a
+        // perfectly working VPN right after "Initialization Sequence Completed".
+        None
     } else if line_lower.contains("error") || line_lower.contains("failed") {
         Some("error".to_string())
     } else {

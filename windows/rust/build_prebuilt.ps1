@@ -19,6 +19,8 @@ $ErrorActionPreference = "Stop"
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $rustDir = $scriptDir
 $target = "x86_64-pc-windows-msvc"
+# Always build into the repo target/ tree (avoid stale sandbox CARGO_TARGET_DIR).
+$env:CARGO_TARGET_DIR = Join-Path $rustDir "target"
 $cargoArgs = @("build", "--manifest-path", "$rustDir/Cargo.toml", "--target", $target)
 
 if ($Profile -eq "release") {

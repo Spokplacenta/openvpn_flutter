@@ -1,22 +1,49 @@
 # OpenVPN embedded runtime (Windows)
 
-Place OpenVPN runtime binaries for Windows in this folder.
+OpenVPN runtime binaries for Windows are embedded per **OS architecture** so the
+same application works on both x64 and Windows on ARM (ARM64).
 
-Recommended steps:
-1. Collect signed files from an official OpenVPN installation (`bin` folder).
-2. Add these files to this assets directory:
-   - `openvpn.exe.bin` (or `openvpn.exe`)
-   - `libcrypto-3-x64.dll` (or `libcrypto-3-x64.dll.bin`)
-   - `libssl-3-x64.dll` (or `libssl-3-x64.dll.bin`)
-   - `libpkcs11-helper-1.dll` (or `libpkcs11-helper-1.dll.bin`)
-   - `wintun.dll.bin` (official AMD64 DLL from https://www.wintun.net/)
-3. Update `WindowsBinaryManager.targetVersion` and `expectedHash` accordingly.
-4. Validate license requirements before distribution.
+## Driver strategy (OpenVPN 2.7+)
 
-The plugin deploys these DLLs next to `openvpn.exe` on first startup.
-`WindowsWintunManager` also deploys `wintun.dll` in the same directory.
+OpenVPN 2.7 removed Wintun. LavControl uses:
 
-Important:
-- TAP-Windows is no longer used, and `tap-windows-9.21.2.exe` must not be distributed.
-- This repository may only contain this README on some branches.
-  Add runtime binaries before distribution.
+1. **ovpn-dco** (Win-DCO) — default kernel driver
+2. **tap-windows6** — fallback when DCO is unavailable
+
+Adapters are created via `tapctl.exe` during elevated service setup
+(`tapctl create --hwid ovpn-dco` and `tapctl create --hwid tap0901`).
+
+## Structure
+
+```
+assets/openvpn/windows/
+  x64/     # amd64 build
+    openvpn.exe.bin
+    openvpnserv.exe.bin
+    openvpnservmsg.dll.bin
+    tapctl.exe.bin
+    libcrypto-3-x64.dll
+    libssl-3-x64.dll
+    libpkcs11-helper-1.dll
+  arm64/   # arm64 build (same layout)
+```
+
+`WindowsBinaryManager` deploys OpenVPN binaries. `WindowsDriverManager` deploys
+`tapctl.exe` and creates DCO/TAP adapters under elevation.
+
+## Current version
+
+OpenVPN **2.7.5** (community Windows MSI I001, amd64 + arm64).
+
+## How to refresh / bump the version
+
+```
+powershell -ExecutionPolicy Bypass -File tool/fetch_openvpn_binaries.ps1 -Version 2.7.5
+```
+
+Then update `WindowsBinaryManager.targetVersion` and SHA256 hashes as printed.
+
+## Notes
+
+- Verify MSI GPG signatures against official OpenVPN keys before distribution.
+- Wintun is no longer bundled or used.

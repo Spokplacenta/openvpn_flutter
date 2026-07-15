@@ -31,4 +31,5 @@ flutter:
       windows:
         pluginClass: OpenvpnFlutterPlugin
   assets:
-    - assets/openvpn/windows/
+    - assets/openvpn/windows/x64/
+    - assets/openvpn/windows/arm64/

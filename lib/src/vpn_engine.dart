@@ -6,7 +6,7 @@ import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:flutter/services.dart';
 import 'model/vpn_status.dart';
 import 'windows_binary_manager.dart';
-import 'windows_wintun_manager.dart';
+import 'windows_driver_manager.dart';
 
 ///Stages of vpn connections
 enum VPNStage {
@@ -103,17 +103,15 @@ class OpenVPN {
           "These values are required for ios.");
     }
 
-    // For Windows, ensure the binary and Wintun runtime are available
+    // For Windows, ensure runtime binaries and kernel drivers (DCO/TAP) are ready.
     String? binaryPath;
     if (Platform.isWindows) {
       try {
-        // Ensure OpenVPN binary is available.
         binaryPath = await WindowsBinaryManager.ensureBinary();
-        // Then ensure Wintun runtime is deployed next to the binary.
-        await WindowsWintunManager.ensureWintunDeployed(
+        await WindowsDriverManager.ensureDriversDeployed(
           onProgress: (progress) {
             debugPrint(
-              '[OpenVPN] Wintun deploy progress: ${(progress * 100).toStringAsFixed(1)}%',
+              '[OpenVPN] Driver deploy progress: ${(progress * 100).toStringAsFixed(1)}%',
             );
           },
         );
@@ -273,6 +271,9 @@ class OpenVPN {
             if (packetsIn.trim().isEmpty) packetsIn = "0";
             if (packetsOut.trim().isEmpty) packetsOut = "0";
 
+            final windowsDriver = data["windows_driver"]?.toString();
+            final windowsConnectMode = data["windows_connect_mode"]?.toString();
+
             return VpnStatus(
               connectedOn: connectedOn,
               duration: _duration(DateTime.now().difference(connectedOn).abs()),
@@ -280,6 +281,8 @@ class OpenVPN {
               byteOut: byteOut,
               packetsIn: packetsIn,
               packetsOut: packetsOut,
+              windowsDriver: windowsDriver,
+              windowsConnectMode: windowsConnectMode,
             );
           } else {
             throw Exception("Openvpn not supported on this platform");

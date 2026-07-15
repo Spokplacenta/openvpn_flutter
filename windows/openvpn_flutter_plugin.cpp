@@ -45,6 +45,8 @@ struct VpnState {
     uint64_t byte_out;
     uint64_t packets_in;
     uint64_t packets_out;
+    const char* windows_driver;
+    const char* windows_connect_mode;
 };
 
 // FFI Rust function declarations
@@ -345,6 +347,14 @@ void OpenvpnFlutterPlugin::HandleMethodCall(
       json << "\"byte_out\":\"" << state->byte_out << "\",";
       json << "\"packets_in\":\"" << state->packets_in << "\",";
       json << "\"packets_out\":\"" << state->packets_out << "\"";
+
+      if (state->windows_driver && strlen(state->windows_driver) > 0) {
+        json << ",\"windows_driver\":\"" << state->windows_driver << "\"";
+      }
+
+      if (state->windows_connect_mode && strlen(state->windows_connect_mode) > 0) {
+        json << ",\"windows_connect_mode\":\"" << state->windows_connect_mode << "\"";
+      }
       
       json << "}";
       

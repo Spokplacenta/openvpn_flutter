@@ -11,42 +11,66 @@ import 'package:crypto/crypto.dart' show sha256;
 class WindowsBinaryManager {
   /// Target OpenVPN version (to be updated according to official releases)
   /// See: https://github.com/OpenVPN/openvpn/releases
-  static const String targetVersion = '2.6.16';
+  static const String targetVersion = '2.7.5';
 
-  /// Path to the embedded OpenVPN binary asset inside the Flutter bundle.
-  /// Override the file located at assets/openvpn/windows/openvpn.exe.bin
+  /// Windows OS architecture identifier used to select the correct native
+  /// binary set ('x64' or 'arm64').
+  ///
+  /// A 64-bit (x64) process running under emulation on Windows on ARM reports
+  /// `PROCESSOR_ARCHITECTURE=AMD64`, but the *native* OS architecture is
+  /// exposed through `PROCESSOR_ARCHITEW6432`. Kernel drivers (ovpn-dco, TAP) and
+  /// OpenSSL/OpenVPN native binaries must match the OS architecture, so we
+  /// always resolve the OS arch, not the (possibly emulated) process arch.
+  static String get windowsArch {
+    final effective =
+        (Platform.environment['PROCESSOR_ARCHITEW6432'] ??
+                Platform.environment['PROCESSOR_ARCHITECTURE'] ??
+                '')
+            .toUpperCase();
+    if (effective.contains('ARM64') || effective.contains('AARCH64')) {
+      return 'arm64';
+    }
+    return 'x64';
+  }
+
+  /// Path to the embedded OpenVPN binary asset inside the Flutter bundle,
+  /// scoped to the current OS architecture subfolder (`x64` or `arm64`).
+  /// Override the file located at `assets/openvpn/windows/<arch>/openvpn.exe.bin`
   /// with a trusted executable before distributing the app.
   /// Note: For plugin assets, the path must include 'packages/plugin_name/'
-  static const String embeddedAssetPath =
-      'packages/openvpn_flutter/assets/openvpn/windows/openvpn.exe.bin';
+  static String get embeddedAssetPath =>
+      'packages/openvpn_flutter/assets/openvpn/windows/$windowsArch/openvpn.exe.bin';
 
   /// Indicates whether we should attempt to deploy the embedded asset before
   /// falling back to the legacy download mechanism.
   static const bool preferEmbeddedBinary = true;
 
-  /// Base URL to download OpenVPN installer from GitHub Releases
-  ///
-  /// OpenVPN GitHub releases contain MSI installers, not standalone binaries.
-  /// URL format: https://github.com/OpenVPN/openvpn/releases/download/v{VERSION}/openvpn-install-{VERSION}-I602-amd64.exe
-  ///
-  /// IMPORTANT: The MSI installer must be extracted to obtain openvpn.exe.
-  /// Extraction options:
-  /// 1. Use an MSI extraction tool (7-Zip, msiexec, etc.)
-  /// 2. Install temporarily then copy openvpn.exe from Program Files
-  /// 3. Use a pre-extracted binary from a trusted source
-  ///
-  /// For a production solution, consider:
-  /// - Pre-extract openvpn.exe and distribute it with the application
-  /// - Use a portable/standalone build if available
-  /// - Compile from sources with openvpn-build
-  static const String baseDownloadUrl =
-      'https://github.com/OpenVPN/openvpn/releases/download/v$targetVersion/openvpn-install-$targetVersion-I001-amd64.exe';
+  /// MSI architecture token used by the official OpenVPN Windows installers
+  /// (`amd64` for x64, `arm64` for ARM64).
+  static String get _msiArchToken => windowsArch == 'arm64' ? 'arm64' : 'amd64';
 
-  /// Expected SHA256 hash of the binary (to be filled once the source is defined)
-  /// Allows verification of downloaded file integrity
-  /// Checksums are available at: https://github.com/OpenVPN/openvpn/releases
-  static const String? expectedHash =
-      'F18248CAA052AE5F217BAF30BBFCCA44F8F55857610BA826AF8F1A8429F747DA';
+  /// Base URL to download the official OpenVPN MSI installer (fallback only).
+  ///
+  /// The primary distribution mechanism is the embedded, pre-extracted binary
+  /// asset (see [preferEmbeddedBinary]). This URL is only used as a last-resort
+  /// fallback and must be extracted with `msiexec /a` to obtain `openvpn.exe`.
+  /// Architecture-specific: `amd64` or `arm64`.
+  static String get baseDownloadUrl =>
+      'https://build.openvpn.net/downloads/releases/'
+      'OpenVPN-$targetVersion-I001-$_msiArchToken.msi';
+
+  /// Expected SHA256 hash of the embedded `openvpn.exe`, keyed by architecture.
+  ///
+  /// Fill these with the SHA256 of the pre-extracted binaries staged under
+  /// `assets/openvpn/windows/<arch>/openvpn.exe.bin` (see
+  /// `tool/fetch_openvpn_binaries.ps1`). Leave `null` to skip verification.
+  static const Map<String, String?> _expectedHashByArch = {
+    'x64': '49FF9582D272BC72F39DAB8D34E092508D6900557C6D5309C118B26B7033394F',
+    'arm64': '7D8072BF9D1F02AA454141D1044A9E9F3FB9D6187F8ED88509347EE359F4E0D5',
+  };
+
+  /// Expected SHA256 hash of the embedded `openvpn.exe` for the current OS arch.
+  static String? get expectedHash => _expectedHashByArch[windowsArch];
 
   /// Indicates whether the downloaded file is an MSI installer (true) or a standalone binary (false)
   static const bool isInstaller = true;
@@ -60,9 +84,18 @@ class WindowsBinaryManager {
   /// Message DLL used by the Interactive Service for event-log entries.
   static const String interactiveServiceMsgDll = 'openvpnservmsg.dll';
 
-  /// SHA256 of the embedded `openvpnserv.exe` (OpenVPN 2.6.16).
-  static const String? expectedInteractiveServiceHash =
-      '19EC0DD386319FB543567A3AE426AA7980F4D1F844FC8EDB3CCB55E43B5DFA6E';
+  /// SHA256 of the embedded `openvpnserv.exe`, keyed by architecture.
+  ///
+  /// Fill with the SHA256 of the staged
+  /// `assets/openvpn/windows/<arch>/openvpnserv.exe.bin`. Leave `null` to skip.
+  static const Map<String, String?> _expectedInteractiveServiceHashByArch = {
+    'x64': 'B04E2159E5A38DBD7C4510BF9431AE36B4C6E4954D0EA4B10F1321B90C54C6B2',
+    'arm64': '0B18387EB2B9C79EBAAC6DA1340FBB5D02CC9ACF22FCF949882BD2CDCBBFFE47',
+  };
+
+  /// SHA256 of the embedded `openvpnserv.exe` for the current OS architecture.
+  static String? get expectedInteractiveServiceHash =>
+      _expectedInteractiveServiceHashByArch[windowsArch];
 
   /// Subfolder under the OpenVPN runtime directory for `.ovpn` configs.
   static const String configSubdir = 'config';
@@ -83,17 +116,25 @@ class WindowsBinaryManager {
   static const String hashFileName = 'openvpn_sha256.txt';
 
   /// OpenVPN runtime dependencies required by openvpn.exe on Windows.
-  static const List<String> requiredRuntimeDlls = [
-    'libcrypto-3-x64.dll',
-    'libssl-3-x64.dll',
-    'libpkcs11-helper-1.dll',
-  ];
+  ///
+  /// The OpenSSL DLLs are architecture-specific and named accordingly by the
+  /// official installer (`-x64` on amd64, `-arm64` on ARM64), while the
+  /// pkcs11-helper DLL keeps the same name on all architectures.
+  static List<String> get requiredRuntimeDlls {
+    final suffix = windowsArch == 'arm64' ? 'arm64' : 'x64';
+    return [
+      'libcrypto-3-$suffix.dll',
+      'libssl-3-$suffix.dll',
+      'libpkcs11-helper-1.dll',
+    ];
+  }
 
-  /// Plugin asset base paths (package and direct paths).
-  static const List<String> _assetBasePaths = [
-    'packages/openvpn_flutter/assets/openvpn/windows',
-    'assets/openvpn/windows',
-  ];
+  /// Plugin asset base paths (package and direct paths), scoped to the current
+  /// OS architecture subfolder (`x64` or `arm64`).
+  static List<String> get _assetBasePaths => [
+        'packages/openvpn_flutter/assets/openvpn/windows/$windowsArch',
+        'assets/openvpn/windows/$windowsArch',
+      ];
 
   /// Environment variable allowing to override the binary path for debugging.
   ///
@@ -432,6 +473,10 @@ class WindowsBinaryManager {
       path.join(dir.path, binaryName),
       path.join(dir.path, versionFileName),
       path.join(dir.path, hashFileName),
+      // Force redeploy of the Interactive Service binaries on version change so
+      // they never lag behind openvpn.exe (version mismatch breaks service IPC).
+      path.join(dir.path, interactiveServiceBinaryName),
+      path.join(dir.path, interactiveServiceMsgDll),
       ...requiredRuntimeDlls.map((dll) => path.join(dir.path, dll)),
     ];
     for (final filePath in filesToDelete) {
@@ -628,7 +673,27 @@ class WindowsBinaryManager {
       interactiveServiceBinaryName,
     );
     final servFile = File(servPath);
-    if (!await servFile.exists()) {
+
+    // Redeploy when the binary is missing OR when the deployed file does not
+    // match the expected hash for the current architecture/version. This
+    // self-heals stale `openvpnserv.exe` left by a previous OpenVPN version:
+    // the upgrade path refreshes `openvpn.exe` but a version mismatch between
+    // openvpn.exe (new) and the Interactive Service (old) breaks the service
+    // IPC (e.g. Register_dns), which tears the tunnel down after connect.
+    var needsServDeploy = !await servFile.exists();
+    if (!needsServDeploy && expectedInteractiveServiceHash != null) {
+      final actual = await calculateFileHash(servFile);
+      needsServDeploy =
+          actual.toLowerCase() != expectedInteractiveServiceHash!.toLowerCase();
+      if (needsServDeploy) {
+        debugPrint(
+          '♻️ [OpenVPN] $interactiveServiceBinaryName obsolète '
+          '(hash différent), redéploiement de la version embarquée.',
+        );
+      }
+    }
+
+    if (needsServDeploy) {
       final data = await _loadPluginAssetBytes(
         '$interactiveServiceBinaryName.bin',
         allowBinSuffix: false,
@@ -652,8 +717,10 @@ class WindowsBinaryManager {
       debugPrint('✅ [OpenVPN] Interactive Service déployé: $servPath');
     }
 
+    // Keep the message DLL in sync: redeploy it whenever the service binary was
+    // (re)deployed, or when it is missing.
     final msgPath = path.join(targetDir.path, interactiveServiceMsgDll);
-    if (!await File(msgPath).exists()) {
+    if (needsServDeploy || !await File(msgPath).exists()) {
       final msgData = await _loadPluginAssetBytes(
         '$interactiveServiceMsgDll.bin',
         allowBinSuffix: false,

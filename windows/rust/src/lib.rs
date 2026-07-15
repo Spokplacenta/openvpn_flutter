@@ -50,6 +50,8 @@ pub struct VpnState {
     pub byte_out: u64,
     pub packets_in: u64,
     pub packets_out: u64,
+    pub windows_driver: *const c_char,
+    pub windows_connect_mode: *const c_char,
 }
 
 impl Default for VpnState {
@@ -61,6 +63,8 @@ impl Default for VpnState {
             byte_out: 0,
             packets_in: 0,
             packets_out: 0,
+            windows_driver: ptr::null(),
+            windows_connect_mode: ptr::null(),
         }
     }
 }
@@ -340,6 +344,22 @@ pub unsafe extern "C" fn openvpn_get_status() -> *mut VpnState {
 
             let stage_ptr = stage_cstr.into_raw();
 
+            let windows_driver_cstr = stats
+                .windows_driver
+                .as_ref()
+                .and_then(|s| CString::new(s.as_str()).ok());
+            let windows_driver_ptr = windows_driver_cstr
+                .map(|s| s.into_raw() as *const c_char)
+                .unwrap_or(ptr::null());
+
+            let windows_connect_mode_cstr = stats
+                .windows_connect_mode
+                .as_ref()
+                .and_then(|s| CString::new(s.as_str()).ok());
+            let windows_connect_mode_ptr = windows_connect_mode_cstr
+                .map(|s| s.into_raw() as *const c_char)
+                .unwrap_or(ptr::null());
+
             let state = Box::new(VpnState {
                 stage: stage_ptr as *const c_char,
                 connected_on: connected_on_cstr,
@@ -347,6 +367,8 @@ pub unsafe extern "C" fn openvpn_get_status() -> *mut VpnState {
                 byte_out: stats.byte_out,
                 packets_in: stats.packets_in,
                 packets_out: stats.packets_out,
+                windows_driver: windows_driver_ptr,
+                windows_connect_mode: windows_connect_mode_ptr,
             });
 
             Box::into_raw(state)
@@ -387,6 +409,14 @@ pub unsafe extern "C" fn openvpn_free_state(ptr: *mut VpnState) {
         if !state.connected_on.is_null() {
             // Free the connected_on string
             let _ = CString::from_raw(state.connected_on as *mut c_char);
+        }
+
+        if !state.windows_driver.is_null() {
+            let _ = CString::from_raw(state.windows_driver as *mut c_char);
+        }
+
+        if !state.windows_connect_mode.is_null() {
+            let _ = CString::from_raw(state.windows_connect_mode as *mut c_char);
         }
     }
 }
