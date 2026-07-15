@@ -13,6 +13,10 @@ OpenVPN 2.7 removed Wintun. LavControl uses:
 Adapters are created via `tapctl.exe` during elevated service setup
 (`tapctl create --hwid ovpn-dco` and `tapctl create --hwid tap0901`).
 
+Signed driver packages (ovpn-dco + tap-windows6) are bundled under
+`drivers/` and installed with `pnputil` before adapter creation.
+Run `tool/fetch_openvpn_binaries.ps1` to refresh binaries and drivers.
+
 ## Structure
 
 ```

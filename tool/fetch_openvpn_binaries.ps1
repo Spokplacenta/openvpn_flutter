@@ -82,6 +82,50 @@ foreach ($msiArch in $archMap.Keys) {
         Copy-Item -Path $src -Destination (Join-Path $destDir $destName) -Force
         Write-Output "  copied: $(Split-Path $src -Leaf) -> $destName"
     }
+
+    # Kernel drivers are not included in the admin MSI extract; bundle signed
+    # packages for pnputil during LavControl elevated setup.
+    $driversRoot = Join-Path $destDir "drivers"
+    New-Item -ItemType Directory -Force -Path $driversRoot | Out-Null
+
+    $dcoZipName = if ($msiArch -eq "arm64") { "ovpn-dco-win-2.8.3-arm64.zip" } else { "ovpn-dco-win-2.8.3-amd64.zip" }
+    $dcoZip = Join-Path $work $dcoZipName
+    if (-not (Download-First -Urls @(
+            "https://github.com/OpenVPN/ovpn-dco-win/releases/download/2.8.3/$dcoZipName"
+        ) -OutFile $dcoZip)) {
+        throw "Unable to download ovpn-dco driver package for $msiArch"
+    }
+    $dcoExtract = Join-Path $work "dco_$msiArch"
+    New-Item -ItemType Directory -Force -Path $dcoExtract | Out-Null
+    Expand-Archive -Path $dcoZip -DestinationPath $dcoExtract -Force
+    foreach ($flavor in @("win10", "win11")) {
+        $srcFlavor = Join-Path $dcoExtract $flavor
+        if (-not (Test-Path $srcFlavor)) { continue }
+        $dstFlavor = Join-Path $driversRoot "ovpn-dco\$flavor"
+        New-Item -ItemType Directory -Force -Path $dstFlavor | Out-Null
+        Copy-Item -Path (Join-Path $srcFlavor "*") -Destination $dstFlavor -Force
+        Write-Output "  copied: ovpn-dco/$flavor"
+    }
+
+    $tapZip = Join-Path $work "dist.win10.zip"
+    if (-not (Download-First -Urls @(
+            "https://github.com/OpenVPN/tap-windows6/releases/download/9.27.0/dist.win10.zip"
+        ) -OutFile $tapZip)) {
+        throw "Unable to download tap-windows6 driver package"
+    }
+    $tapExtract = Join-Path $work "tap_$msiArch"
+    New-Item -ItemType Directory -Force -Path $tapExtract | Out-Null
+    Expand-Archive -Path $tapZip -DestinationPath $tapExtract -Force
+    $tapPlatform = if ($msiArch -eq "arm64") { "arm64" } else { "amd64" }
+    $tapSrc = Join-Path $tapExtract "$tapPlatform\win10"
+    if (-not (Test-Path $tapSrc)) {
+        $tapSrc = Join-Path $tapExtract $tapPlatform
+    }
+    if (-not (Test-Path $tapSrc)) { throw "TAP driver folder missing for $tapPlatform in dist.win10.zip" }
+    $tapDst = Join-Path $driversRoot "tap\$tapPlatform\win10"
+    New-Item -ItemType Directory -Force -Path $tapDst | Out-Null
+    Copy-Item -Path (Join-Path $tapSrc "*") -Destination $tapDst -Force
+    Write-Output "  copied: tap/$tapPlatform/win10"
 }
 
 Write-Output ""
