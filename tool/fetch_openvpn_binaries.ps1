@@ -117,14 +117,19 @@ foreach ($msiArch in $archMap.Keys) {
     New-Item -ItemType Directory -Force -Path $tapExtract | Out-Null
     Expand-Archive -Path $tapZip -DestinationPath $tapExtract -Force
     $tapPlatform = if ($msiArch -eq "arm64") { "arm64" } else { "amd64" }
-    $tapSrc = Join-Path $tapExtract "$tapPlatform\win10"
-    if (-not (Test-Path $tapSrc)) {
-        $tapSrc = Join-Path $tapExtract $tapPlatform
-    }
-    if (-not (Test-Path $tapSrc)) { throw "TAP driver folder missing for $tapPlatform in dist.win10.zip" }
+    # The zip nests everything under a top-level dist.win10/ folder; locate the
+    # per-platform directory by its INF rather than assuming the layout.
+    $tapInf = Get-ChildItem -Path $tapExtract -Recurse -File -Filter "OemVista.inf" -ErrorAction SilentlyContinue |
+        Where-Object { $_.Directory.Name -eq $tapPlatform } |
+        Select-Object -First 1
+    if (-not $tapInf) { throw "TAP driver folder missing for $tapPlatform in dist.win10.zip" }
+    $tapSrc = $tapInf.Directory.FullName
     $tapDst = Join-Path $driversRoot "tap\$tapPlatform\win10"
     New-Item -ItemType Directory -Force -Path $tapDst | Out-Null
-    Copy-Item -Path (Join-Path $tapSrc "*") -Destination $tapDst -Force
+    # Only the driver package itself; devcon.exe is not needed (tapctl handles adapters).
+    foreach ($name in @("OemVista.inf", "tap0901.cat", "tap0901.sys")) {
+        Copy-Item -Path (Join-Path $tapSrc $name) -Destination $tapDst -Force
+    }
     Write-Output "  copied: tap/$tapPlatform/win10"
 }
 

@@ -13,8 +13,9 @@ OpenVPN 2.7 removed Wintun. LavControl uses:
 Adapters are created via `tapctl.exe` during elevated service setup
 (`tapctl create --hwid ovpn-dco` and `tapctl create --hwid tap0901`).
 
-Signed driver packages (ovpn-dco + tap-windows6) are bundled under
-`drivers/` and installed with `pnputil` before adapter creation.
+Signed driver packages (ovpn-dco-win 2.8.3 + tap-windows6 9.27.0) are bundled
+under `drivers/` and installed with `pnputil` before adapter creation. Without
+them `tapctl create` fails on any machine that has no OpenVPN preinstalled.
 Run `tool/fetch_openvpn_binaries.ps1` to refresh binaries and drivers.
 
 ## Structure
@@ -29,8 +30,17 @@ assets/openvpn/windows/
     libcrypto-3-x64.dll
     libssl-3-x64.dll
     libpkcs11-helper-1.dll
-  arm64/   # arm64 build (same layout)
+    drivers/
+      ovpn-dco/win10/   # ovpn-dco.inf / .cat / .sys
+      ovpn-dco/win11/
+      tap/amd64/win10/  # OemVista.inf, tap0901.cat, tap0901.sys
+  arm64/   # arm64 build (same layout, TAP under tap/arm64/win10/)
 ```
+
+Flutter only bundles files located **directly** inside a declared asset
+directory. Every `drivers/...` leaf directory above must therefore be listed
+explicitly in `pubspec.yaml`; adding a new flavor requires a new entry there
+and in `WindowsDriverManager._deployBundledDriverAssets`.
 
 `WindowsBinaryManager` deploys OpenVPN binaries. `WindowsDriverManager` deploys
 `tapctl.exe` and creates DCO/TAP adapters under elevation.

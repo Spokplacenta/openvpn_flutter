@@ -30,6 +30,14 @@ flutter:
         pluginClass: OpenVPNFlutterPlugin
       windows:
         pluginClass: OpenvpnFlutterPlugin
+  # Flutter only bundles files directly inside a declared directory, so every
+  # driver sub-directory must be listed explicitly.
   assets:
     - assets/openvpn/windows/x64/
+    - assets/openvpn/windows/x64/drivers/ovpn-dco/win10/
+    - assets/openvpn/windows/x64/drivers/ovpn-dco/win11/
+    - assets/openvpn/windows/x64/drivers/tap/amd64/win10/
     - assets/openvpn/windows/arm64/
+    - assets/openvpn/windows/arm64/drivers/ovpn-dco/win10/
+    - assets/openvpn/windows/arm64/drivers/ovpn-dco/win11/
+    - assets/openvpn/windows/arm64/drivers/tap/arm64/win10/

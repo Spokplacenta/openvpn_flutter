@@ -70,7 +70,11 @@ class WindowsDriverManager {
     }
   }
 
-  /// Copies bundled tapctl.exe and optional driver packages to the staging directory.
+  /// Copies bundled tapctl.exe and driver packages to the staging directory.
+  ///
+  /// Returns `false` when tapctl or every driver package is missing from the
+  /// bundle: the elevated setup would then be unable to create any adapter on
+  /// a machine without OpenVPN preinstalled.
   static Future<bool> ensureDriversDeployed({
     void Function(double progress)? onProgress,
   }) async {
@@ -90,12 +94,13 @@ class WindowsDriverManager {
     debugPrint('✅ [OpenVPN] tapctl deployed: $dest');
 
     onProgress?.call(0.5);
-    await _deployBundledDriverAssets(stagingDir);
+    final copied = await _deployBundledDriverAssets(stagingDir);
     onProgress?.call(1.0);
-    return true;
+    return copied > 0;
   }
 
-  static Future<void> _deployBundledDriverAssets(String stagingDir) async {
+  /// Returns the number of driver files written to [stagingDir].
+  static Future<int> _deployBundledDriverAssets(String stagingDir) async {
     final arch = WindowsBinaryManager.windowsArch;
     final platform = arch == 'arm64' ? 'arm64' : 'amd64';
     final driverFiles = <String>[
@@ -127,6 +132,7 @@ class WindowsDriverManager {
         'run tool/fetch_openvpn_binaries.ps1 before building',
       );
     }
+    return copied;
   }
 
   static Future<List<int>?> _loadDriverAsset(String relativePath) async {
