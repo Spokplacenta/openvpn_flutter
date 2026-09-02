@@ -27,6 +27,7 @@ mod win32 {
     pub const GENERIC_READ: DWORD = 0x80000000;
     pub const GENERIC_WRITE: DWORD = 0x40000000;
     pub const OPEN_EXISTING: DWORD = 3;
+    pub const ERROR_ACCESS_DENIED: DWORD = 5;
     pub const ERROR_PIPE_BUSY: DWORD = 231;
     pub const PROCESS_QUERY_LIMITED_INFORMATION: DWORD = 0x1000;
     pub const PIPE_READMODE_MESSAGE: DWORD = 0x00000002;
@@ -115,6 +116,10 @@ impl std::error::Error for ServiceIpcError {}
 pub struct ServiceResponse {
     pub pid: u32,
     pub description: String,
+    /// Client end of the service pipe. The Interactive Service terminates the
+    /// launched `openvpn.exe` as soon as this handle is closed, so it must be
+    /// kept alive for the whole connection; dropping it *is* the disconnect.
+    pub pipe: ServicePipe,
 }
 
 // ---------------------------------------------------------------------------
@@ -129,17 +134,28 @@ const PIPE_READ_BUFFER_SIZE: usize = 4096;
 // RAII handle wrapper
 // ---------------------------------------------------------------------------
 
+/// Owned client handle on the Interactive Service pipe; closed on drop.
 #[cfg(target_os = "windows")]
-struct PipeHandle(win32::HANDLE);
+pub struct ServicePipe(win32::HANDLE);
+
+// The handle is only ever closed once (Drop) and never dereferenced; it is
+// safe to move it to the task that owns the connection.
+#[cfg(target_os = "windows")]
+unsafe impl Send for ServicePipe {}
+#[cfg(target_os = "windows")]
+unsafe impl Sync for ServicePipe {}
 
 #[cfg(target_os = "windows")]
-impl Drop for PipeHandle {
+impl Drop for ServicePipe {
     fn drop(&mut self) {
         unsafe {
             win32::CloseHandle(self.0);
         }
     }
 }
+
+#[cfg(not(target_os = "windows"))]
+pub struct ServicePipe;
 
 // ---------------------------------------------------------------------------
 // UTF-16 helpers
@@ -215,7 +231,7 @@ pub fn connect_and_launch(
         )));
     }
 
-    let pipe = PipeHandle(handle);
+    let pipe = ServicePipe(handle);
 
     // The Interactive Service creates a MESSAGE-mode pipe; switch the client
     // handle to MESSAGE read mode so ReadFile returns one message at a time.
@@ -276,14 +292,24 @@ pub fn connect_and_launch(
     };
     let response_text = String::from_utf16_lossy(wide_slice);
 
-    parse_service_response(&response_text)
+    let parsed = parse_service_response(&response_text)?;
+    Ok(ServiceResponse {
+        pid: parsed.pid,
+        description: parsed.description,
+        pipe,
+    })
 }
 
 // ---------------------------------------------------------------------------
 // Response parser
 // ---------------------------------------------------------------------------
 
-fn parse_service_response(text: &str) -> Result<ServiceResponse, ServiceIpcError> {
+struct ParsedResponse {
+    pid: u32,
+    description: String,
+}
+
+fn parse_service_response(text: &str) -> Result<ParsedResponse, ServiceIpcError> {
     let lines: Vec<&str> = text.lines().collect();
     if lines.len() < 3 {
         return Err(ServiceIpcError::InvalidResponse(format!(
@@ -307,7 +333,7 @@ fn parse_service_response(text: &str) -> Result<ServiceResponse, ServiceIpcError
         ServiceIpcError::InvalidResponse(format!("Cannot parse PID from '{}'", lines[1]))
     })?;
 
-    Ok(ServiceResponse {
+    Ok(ParsedResponse {
         pid,
         description: lines[2].trim().to_string(),
     })
@@ -335,13 +361,16 @@ pub fn is_service_available() -> bool {
 // ---------------------------------------------------------------------------
 
 /// Returns `true` when the given PID still represents a running process.
+///
+/// `openvpn.exe` launched by the Interactive Service may not be openable from
+/// an unprivileged caller; ERROR_ACCESS_DENIED still proves the process exists.
 #[cfg(target_os = "windows")]
 pub fn is_pid_alive(pid: u32) -> bool {
     let handle = unsafe {
         win32::OpenProcess(win32::PROCESS_QUERY_LIMITED_INFORMATION, 0, pid)
     };
     if handle.is_null() {
-        return false;
+        return unsafe { win32::GetLastError() } == win32::ERROR_ACCESS_DENIED;
     }
     unsafe {
         win32::CloseHandle(handle);

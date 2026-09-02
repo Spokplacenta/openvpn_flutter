@@ -331,8 +331,23 @@ pub struct VpnStats {
 enum ManagedProcess {
     /// Launched directly via `tokio::process::Command` (stdout/stderr piped).
     Direct(TokioChild),
-    /// Launched via the Interactive Service IPC; only the PID is known.
-    Service { pid: u32 },
+    /// Launched via the Interactive Service IPC. The service terminates
+    /// `openvpn.exe` when `pipe` is closed, so dropping it is the disconnect.
+    Service {
+        pid: u32,
+        pipe: service_ipc::ServicePipe,
+    },
+}
+
+/// Terminates a service-launched `openvpn.exe`: closing the pipe asks the
+/// Interactive Service to stop it; `taskkill` is only a best-effort fallback
+/// (it needs privileges the app usually lacks).
+async fn stop_service_process(pid: u32, pipe: service_ipc::ServicePipe) {
+    drop(pipe);
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    if service_ipc::is_pid_alive(pid) {
+        kill_process_by_pid(pid).await;
+    }
 }
 
 // ── Manager ─────────────────────────────────────────────────────────────────
@@ -441,8 +456,8 @@ impl OpenVpnManager {
                         let _ = child.kill().await;
                         let _ = child.wait().await;
                     }
-                    ManagedProcess::Service { pid, .. } => {
-                        kill_process_by_pid(pid).await;
+                    ManagedProcess::Service { pid, pipe } => {
+                        stop_service_process(pid, pipe).await;
                     }
                 }
             }
@@ -567,17 +582,19 @@ impl OpenVpnManager {
                             connect_started_at.elapsed().as_millis()
                         ));
 
+                        let pid = response.pid;
                         match outcome {
                             ConnectOutcome::Connected | ConnectOutcome::StillRunning => {
                                 {
                                     let mut process = self.process.lock().unwrap();
                                     *process = Some(ManagedProcess::Service {
-                                        pid: response.pid,
+                                        pid,
+                                        pipe: response.pipe,
                                     });
                                 }
                                 self.spawn_log_tailer(
                                     log_file_path.clone(),
-                                    response.pid,
+                                    pid,
                                     connect_started_at,
                                 );
                                 used_service = true;
@@ -588,14 +605,14 @@ impl OpenVpnManager {
                             ConnectOutcome::DriverFailed
                                 if *strategy == DriverStrategy::OvpnDco =>
                             {
-                                kill_process_by_pid(response.pid).await;
+                                stop_service_process(pid, response.pipe).await;
                                 diag_log_to_file(
                                     "[RUST_CONNECT] phase=dco_failed fallback=tap-windows6",
                                 );
                                 continue;
                             }
                             ConnectOutcome::DriverFailed | ConnectOutcome::FatalError => {
-                                kill_process_by_pid(response.pid).await;
+                                stop_service_process(pid, response.pipe).await;
                                 break;
                             }
                         }
@@ -979,12 +996,12 @@ impl OpenVpnManager {
                 let _ = child.wait().await;
                 debug_log_to_file("[DEBUG] Direct process cleaned up");
             }
-            Some(ManagedProcess::Service { pid, .. }) => {
+            Some(ManagedProcess::Service { pid, pipe }) => {
                 diag_log_to_file(&format!(
                     "[RUST_DISCONNECT] mode=service pid={}",
                     pid
                 ));
-                kill_process_by_pid(pid).await;
+                stop_service_process(pid, pipe).await;
             }
             None => {
                 debug_log_to_file("[DEBUG] No tracked process to disconnect");

@@ -56,5 +56,5 @@ if (Test-Path $importLibDllLib) {
 }
 
 Write-Host ""
-Write-Host "OK — prebuilt artifacts updated in:"
+Write-Host "OK - prebuilt artifacts updated in:"
 Write-Host "  $prebuiltDir"
