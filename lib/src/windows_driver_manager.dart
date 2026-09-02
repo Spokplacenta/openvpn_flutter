@@ -161,6 +161,11 @@ class WindowsDriverManager {
   /// Driver packages may be bundled under
   /// `assets/openvpn/windows/<arch>/drivers/` (installed with pnputil before
   /// tapctl create). Failures here must never abort OpenVPN service install.
+  ///
+  /// This fragment is inlined into the host's elevated script, which provides
+  /// `Log-Step`. Function names defined here must not collide with the host's
+  /// (e.g. `Invoke-NativeLogged`): a redefinition silently replaces the host
+  /// function for the rest of the script and breaks service start.
   static String installDriversScriptBody({
     required String stagingDir,
     required String machineDir,
@@ -168,7 +173,7 @@ class WindowsDriverManager {
     final staging = stagingDir.replaceAll("'", "''");
     final machine = machineDir.replaceAll("'", "''");
     return '''
-function Invoke-NativeLogged {
+function Invoke-DriverToolLogged {
   param(
     [string]\$Label,
     [string]\$FilePath,
@@ -208,7 +213,7 @@ function Install-DriverPackageIfPresent {
     return \$false
   }
   Log-Step "[LAVCONTROL] Installing \$Label driver via pnputil: \$InfPath"
-  Invoke-NativeLogged -Label "pnputil \$Label" -FilePath 'pnputil.exe' -ArgumentList @('/add-driver', \$InfPath, '/install') | Out-Null
+  Invoke-DriverToolLogged -Label "pnputil \$Label" -FilePath 'pnputil.exe' -ArgumentList @('/add-driver', \$InfPath, '/install') | Out-Null
   return \$true
 }
 
@@ -221,7 +226,7 @@ function Invoke-TapCtlCreateWithRetry {
     [int]\$DelaySeconds = 2
   )
   for (\$attempt = 1; \$attempt -le \$MaxAttempts; \$attempt++) {
-    \$output = Invoke-NativeLogged -Label "\$Label attempt \$attempt/\$MaxAttempts" -FilePath \$TapCtl -ArgumentList \$ArgumentList
+    \$output = Invoke-DriverToolLogged -Label "\$Label attempt \$attempt/\$MaxAttempts" -FilePath \$TapCtl -ArgumentList \$ArgumentList
     if (\$output -match '\{[0-9a-fA-F-]{36}\}') {
       Log-Step "[LAVCONTROL] \$Label succeeded on attempt \$attempt"
       return \$true
@@ -315,7 +320,7 @@ function Install-OpenVpnDrivers {
     return
   }
 
-  \$dcoList = Invoke-NativeLogged -Label 'tapctl list (before)' -FilePath \$tapctl -ArgumentList @('list')
+  \$dcoList = Invoke-DriverToolLogged -Label 'tapctl list (before)' -FilePath \$tapctl -ArgumentList @('list')
   Log-Step "[LAVCONTROL] tapctl list before install:`n\$dcoList"
 
   function New-DcoAdapter {
@@ -339,15 +344,15 @@ function Install-OpenVpnDrivers {
 
   if ('${WindowsBinaryManager.windowsArch}' -eq 'arm64') {
     if (\$dcoList -notmatch 'tap0901|TAP-Windows6') { New-TapAdapter }
-    \$dcoList = Invoke-NativeLogged -Label 'tapctl list (mid)' -FilePath \$tapctl -ArgumentList @('list')
+    \$dcoList = Invoke-DriverToolLogged -Label 'tapctl list (mid)' -FilePath \$tapctl -ArgumentList @('list')
     if (\$dcoList -notmatch 'ovpn-dco|Data Channel Offload') { New-DcoAdapter }
   } else {
     if (\$dcoList -notmatch 'ovpn-dco|Data Channel Offload') { New-DcoAdapter }
-    \$dcoList = Invoke-NativeLogged -Label 'tapctl list (mid)' -FilePath \$tapctl -ArgumentList @('list')
+    \$dcoList = Invoke-DriverToolLogged -Label 'tapctl list (mid)' -FilePath \$tapctl -ArgumentList @('list')
     if (\$dcoList -notmatch 'tap0901|TAP-Windows6') { New-TapAdapter }
   }
 
-  Invoke-NativeLogged -Label 'tapctl list (after)' -FilePath \$tapctl -ArgumentList @('list') | Out-Null
+  Invoke-DriverToolLogged -Label 'tapctl list (after)' -FilePath \$tapctl -ArgumentList @('list') | Out-Null
 }
 
 Install-OpenVpnDrivers -StagingDir '$staging' -MachineDir '$machine'
